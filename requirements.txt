@@ -1,0 +1,12 @@
+flask==3.0.3
+gunicorn==22.0.0
+pdf2image==1.17.0
+pytesseract==0.3.13
+pillow==10.4.0
+
+# Optional — enables the AI/NER layer (detect_entities in engine/ner.py)
+# for PERSON/ORG/GPE/MONEY mentions that regex + label detectors miss.
+# The app runs fine without these; ner_available() just returns False
+# and the UI shows "regex & layout detection only" in the header.
+# After installing, also run: python -m spacy download en_core_web_sm
+spacy==3.7.5

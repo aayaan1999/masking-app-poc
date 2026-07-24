@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Redactor — Automatic document field masking</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="grain"></div>
+
+<header class="topbar">
+  <div class="topbar__mark">
+    <span class="topbar__bracket">[</span>REDACTOR<span class="topbar__bracket">]</span>
+  </div>
+  <div class="topbar__meta">
+    OCR: <span class="pill{% if 'urd' in ocr_languages or 'ara' in ocr_languages %} pill--on{% endif %}">{{ ocr_languages }}</span>
+    {% if ner_active %}<span class="pill pill--on">NER model active</span>{% else %}<span class="pill">regex &amp; layout detection only</span>{% endif %}
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- STEP 1: upload -->
+  <section id="step-upload" class="panel step">
+    <h1 class="headline">Black out what<br>shouldn't travel.</h1>
+    <p class="subhead">
+      Upload any PDF — an ID card, PAN card, offer letter, or a full bank
+      statement. We scan the whole document, list out every field we
+      found, and you pick exactly what gets redacted. Nothing is stored
+      after processing.
+    </p>
+
+    <div id="dropzone" class="dropzone">
+      <input type="file" id="file-input" accept="application/pdf" hidden>
+      <div class="dropzone__icon">＋</div>
+      <div class="dropzone__label">Drop a PDF here, or <span class="dropzone__browse">browse</span></div>
+      <div class="dropzone__filename" id="file-name"></div>
+    </div>
+
+    <div id="upload-status" class="status"></div>
+  </section>
+
+  <!-- STEP 2: review detected fields (hidden until /extract returns) -->
+  <section id="step-review" class="panel step" hidden>
+    <h2 class="headline headline--sm">We found these fields</h2>
+    <p class="subhead" id="review-subhead">Select what to mask. Fields are grouped by type — checking one masks every occurrence.</p>
+
+    <div id="groups-container" class="groups"></div>
+
+    <div class="instructions">
+      <label for="instructions" class="instructions__legend">ANYTHING ELSE? DESCRIBE IT IN PLAIN ENGLISH</label>
+      <textarea id="instructions" placeholder='e.g. mask all Unnati&#39;s transactions — or redact "Acme Corp" everywhere'></textarea>
+    </div>
+
+    <div class="review-actions">
+      <button type="button" id="back-btn" class="btn-secondary">← Upload a different file</button>
+      <button type="button" id="mask-btn" class="btn-primary">
+        <span class="btn-primary__label">Mask document</span>
+        <span class="btn-primary__arrow">→</span>
+      </button>
+    </div>
+
+    <div id="mask-status" class="status"></div>
+  </section>
+
+</main>
+
+<footer class="footer">Processed in memory · originals deleted immediately after OCR · session data expires after 30 minutes</footer>
+
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
