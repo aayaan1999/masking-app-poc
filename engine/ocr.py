@@ -103,10 +103,25 @@ def ocr_page(image):
     this line except the label" don't care about reading order and are
     unaffected; only human-facing preview text may read reversed.
     """
-    raw = pytesseract.image_to_data(
-        image, output_type=pytesseract.Output.DICT,
-        lang=active_ocr_langs(), config="--psm 6 --oem 3",
-    )
+    configs = ["--psm 11 --oem 3", "--psm 6 --oem 3"]
+    raw = None
+    last_error = None
+    for cfg in configs:
+        try:
+            raw = pytesseract.image_to_data(
+                image, output_type=pytesseract.Output.DICT,
+                lang=active_ocr_langs(), config=cfg,
+            )
+            if raw.get("text") and any(text and str(text).strip() for text in raw["text"]):
+                break
+        except Exception as exc:
+            last_error = exc
+
+    if raw is None:
+        if last_error is not None:
+            raise last_error
+        return [], []
+
     words = []
     n = len(raw["text"])
     for i in range(n):

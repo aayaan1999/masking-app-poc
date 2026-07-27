@@ -13,10 +13,14 @@ _ALL_STOPWORDS = {
     "aadhaar", "aadhar", "pan", "kyc", "documents", "entries",
 }
 _ROW_SCOPE_WORDS = re.compile(r'record|transaction|entr|statement|row|line|detail', re.I)
+_NAME_HINT_WORDS = ("name", "person", "customer", "employee")
 
 
 def extract_custom_targets(text: str):
     """Returns a list of (term, mode) where mode is 'row' or 'token'."""
+    if not text:
+        return []
+
     targets = []
     scope = "row" if _ROW_SCOPE_WORDS.search(text) else "token"
 
@@ -40,7 +44,17 @@ def extract_custom_targets(text: str):
     if m:
         return [(m.group(1), "row")]
 
-    m = re.search(r'\ball\s+([A-Z][a-zA-Z]+)\b', text)
+    for pattern in (
+        re.compile(r"\b(?:name|person|customer|employee)\s+(?:is|was|:)?\s*([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})", re.I),
+        re.compile(r"\b(?:mask|redact|hide|blackout|remove)\s+(?:the\s+)?(?:name|person|customer|employee)?\s*(?:called\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})", re.I),
+    ):
+        m = pattern.search(text)
+        if m:
+            term = m.group(1).strip()
+            if term.lower() not in _ALL_STOPWORDS:
+                return [(term, scope)]
+
+    m = re.search(r'\ball\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})\b', text)
     if m and m.group(1).lower() not in _ALL_STOPWORDS:
         return [(m.group(1), scope)]
 
