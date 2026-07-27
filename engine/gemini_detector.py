@@ -37,7 +37,7 @@ def _call_gemini(image, prompt):
     buf = BytesIO()
     image.save(buf, format="JPEG", quality=92)
     payload = {
-        "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(buf.getvalue()).decode("ascii")}}]}],
+        "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "application/pdf", "data": base64.b64encode(buf.getvalue()).decode("ascii")}}]}],
         "generationConfig": {"temperature": 0.0},
     }
     req = urllib.request.Request(
