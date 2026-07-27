@@ -47,8 +47,7 @@ _KNOWN_LABEL_TOKENS = {
     "name", "date", "birth", "dob", "account", "number", "phone", "mobile",
     "email", "address", "passport", "policy", "customer", "employee",
     "license", "registration", "father", "mother", "national", "civil",
-    "emirates", "iqama", "pan", "aadhaar", "card", "id",
-}
+    "emirates", "iqama", "pan", "aadhaar", "card", "id",    "gender", "sex",}
 
 
 def _mk(field_type, display_label, category, value, page, bbox, iid):
@@ -235,16 +234,32 @@ def detect_labelled_dates(words, lines, page, img_w, img_h, counter):
             continue
 
         if concepts_here:
-            # A line can legitimately name more than one date concept
-            # (rare, but "Issued/Expiry: dd/mm - dd/mm" happens) — in
-            # that case every date on the line gets tagged under every
-            # concept found, since we can't reliably tell which date is
-            # which without deeper layout parsing, and over-offering a
-            # checkbox is far safer than silently under-masking one.
-            for concept in concepts_here:
-                val = " ".join(words[i]["text"] for i in date_idxs)
-                out.append(_mk(concept, DATE_CONCEPT_LABELS[concept], "identity", val,
-                                page, words_bbox(words, date_idxs, img_w, img_h), counter.next()))
+            date_positions = [((words[i]["left"] + words[i]["right"]) / 2, i) for i in date_idxs]
+            if len(concepts_here) > 1 and len(date_positions) > 1:
+                concept_positions = []
+                for concept in concepts_here:
+                    kw = i18n_labels.find_keyword_in_text(line["text"], concept)
+                    x = _find_keyword_x_center(words, line["word_idxs"], kw) if kw else (line["left"] + line["right"]) / 2
+                    concept_positions.append((concept, x))
+                assigned = set()
+                for concept, x in sorted(concept_positions, key=lambda t: t[1]):
+                    best = min(
+                        ((abs(pos_x - x), idx) for pos_x, idx in date_positions if idx not in assigned),
+                        default=None,
+                    )
+                    if best is None:
+                        best = min(((abs(pos_x - x), idx) for pos_x, idx in date_positions), default=None)
+                    if best:
+                        _, idx = best
+                        assigned.add(idx)
+                        val = words[idx]["text"]
+                        out.append(_mk(concept, DATE_CONCEPT_LABELS[concept], "identity", val,
+                                        page, words_bbox(words, [idx], img_w, img_h), counter.next()))
+            else:
+                for concept in concepts_here:
+                    val = " ".join(words[i]["text"] for i in date_idxs)
+                    out.append(_mk(concept, DATE_CONCEPT_LABELS[concept], "identity", val,
+                                    page, words_bbox(words, date_idxs, img_w, img_h), counter.next()))
         else:
             for i in date_idxs:
                 out.append(_mk("date_unlabelled", "Date (unlabelled)", "generic", words[i]["text"],

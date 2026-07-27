@@ -103,7 +103,7 @@ def ocr_page(image):
     this line except the label" don't care about reading order and are
     unaffected; only human-facing preview text may read reversed.
     """
-    configs = ["--psm 11 --oem 3", "--psm 6 --oem 3"]
+    configs = ["--psm 4 --oem 3", "--psm 6 --oem 3", "--psm 11 --oem 3"]
     raw = None
     last_error = None
     for cfg in configs:
