@@ -1,6 +1,7 @@
 const stepUpload = document.getElementById('step-upload');
 const stepReview = document.getElementById('step-review');
 const groupsContainer = document.getElementById('groups-container');
+const reviewSubhead = document.getElementById('review-subhead');
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('file-input');
 const fileName = document.getElementById('file-name');
@@ -59,7 +60,9 @@ function pollJobStatus(jobId) {
         return;
       }
       if (data.status === 'done') {
-        renderGroups(data.extra.groups || []);
+        const groups = Array.isArray(data.groups) ? data.groups : (data.extra && Array.isArray(data.extra.groups) ? data.extra.groups : []);
+        const message = data.message || (data.extra && data.extra.message) || '';
+        renderGroups(groups, message);
         stepUpload.hidden = true;
         stepReview.hidden = false;
         setStatus(uploadStatus, '');
@@ -68,15 +71,17 @@ function pollJobStatus(jobId) {
     .catch((err) => setStatus(uploadStatus, err.message || 'Processing failed', true));
 }
 
-function renderGroups(groups) {
+function renderGroups(groups, message) {
+  const groupList = Array.isArray(groups) ? groups : [];
   groupsContainer.innerHTML = '';
   selectedGroupIds.clear();
-  if (!groups.length) {
+  reviewSubhead.textContent = message || 'Select what to mask. Fields are grouped by type — checking one masks every occurrence.';
+  if (!groupList.length) {
     groupsContainer.innerHTML = '<p class="empty-state">No fields detected automatically. You can still use the description box below.</p>';
     return;
   }
   const frag = document.createDocumentFragment();
-  groups.forEach((group) => {
+  groupList.forEach((group) => {
     const card = document.createElement('label');
     card.className = 'group-card';
     card.innerHTML = `
@@ -144,6 +149,7 @@ backBtn.addEventListener('click', () => {
   groupsContainer.innerHTML = '';
   selectedGroupIds.clear();
   instructionsInput.value = '';
+  reviewSubhead.textContent = 'Select what to mask. Fields are grouped by type — checking one masks every occurrence.';
   setStatus(uploadStatus, '');
   setStatus(maskStatus, '');
   currentJobId = null;

@@ -25,6 +25,7 @@ body {
 .status { min-height: 24px; margin-top: 12px; color: #cfe7ff; }
 .status--error { color: #ff8d8d; }
 .groups { display: grid; gap: 12px; margin-top: 16px; }
+.empty-state { color: rgba(255,255,255,0.72); padding: 14px; border: 1px dashed rgba(255,255,255,0.16); border-radius: 14px; background: rgba(255,255,255,0.03); }
 .group-card { display: flex; gap: 12px; align-items: flex-start; padding: 14px; border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; background: rgba(255,255,255,0.03); }
 .group-card__content { flex: 1; }
 .group-card__title { font-weight: 600; margin-bottom: 4px; }
