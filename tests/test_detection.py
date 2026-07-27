@@ -1,4 +1,6 @@
-from engine import detectors
+from PIL import Image
+
+from engine import detectors, gemini_detector
 
 
 def _make_word(text, left, top, right, bottom, conf=90, line_key=0):
@@ -51,3 +53,20 @@ def test_generic_label_on_next_line_is_detected():
     assert len(instances) == 1
     assert instances[0]["display_label"] == "Father's Name"
     assert instances[0]["value"] == "John Smith"
+
+
+def test_gemini_detector_parses_json_and_converts_bbox(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setattr(gemini_detector, "_call_gemini", lambda image, prompt: '[{"field_type": "email", "value": "john@example.com", "bbox": [10, 20, 80, 15], "label": "Email Address"}]')
+
+    words = [_make_word("john@example.com", 10, 20, 90, 35, 90, 0)]
+    lines = [_make_line(0, "john@example.com", 10, 20, 90, 35, [0])]
+
+    instances = gemini_detector.detect_gemini_fields(
+        Image.new("RGB", (100, 100)), words, lines, 0, 100, 100, detectors.InstanceCounter(),
+    )
+
+    assert len(instances) == 1
+    assert instances[0]["field_type"] == "email"
+    assert instances[0]["display_label"] == "Email Address"
+    assert instances[0]["bbox"] == (10, 20, 90, 35)

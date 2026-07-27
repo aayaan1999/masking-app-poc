@@ -8,6 +8,7 @@ Ties the whole thing together:
 
 from . import ocr, detectors, tables, ner, custom, gcc_ids
 from .detectors import InstanceCounter
+from .gemini_detector import detect_gemini_fields
 from .masking import apply_redactions
 
 CATEGORY_ORDER = ["identity", "contact", "financial", "table", "generic", "custom"]
@@ -67,6 +68,9 @@ def extract_fields(pdf_path: str, use_ner: bool = True):
         all_instances += known
         all_instances += gcc_instances
         all_instances += table_instances
+
+        gemini_instances = detect_gemini_fields(image, words, lines, page_idx, img_w, img_h, counter)
+        all_instances += gemini_instances
 
         generic = detectors.detect_generic_labels(words, lines, page_idx, img_w, img_h, counter, claimed)
         all_instances += generic

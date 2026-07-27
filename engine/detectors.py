@@ -153,6 +153,11 @@ def _label_is_probable(label_text):
         return False
     if label_text in {"note", "important", "instructions"}:
         return False
+    tokens = [t for t in re.split(r"\s+", label_text) if t]
+    if len(tokens) > 1:
+        last_token = re.sub(r"[^a-z0-9]+", "", tokens[-1])
+        if not (last_token in _KNOWN_LABEL_TOKENS or last_token.endswith(("name", "number", "address", "id"))):
+            return False
     if any(token in label_text for token in _KNOWN_LABEL_TOKENS):
         return True
     if label_text.endswith("name") or label_text.endswith("number") or label_text.endswith("address") or label_text.endswith("id"):
@@ -181,7 +186,13 @@ def _extract_label_value_pair(words, line, next_line=None):
                 return line_text, " ".join(next_parts), list(next_line["word_idxs"])
         return None
 
-    for label_len in range(1, min(4, len(parts)) + 1):
+    if next_line is not None and _label_is_probable(line_text) and not re.search(r'\d', line_text) and not EMAIL_PATTERN.search(line_text) and not PHONE_PATTERN.search(line_text) and not DATE_PATTERN.search(line_text):
+        next_parts = [words[i]["text"].strip(" ,.:;()[]{}") for i in next_line["word_idxs"]]
+        next_parts = [p for p in next_parts if p]
+        if next_parts and _looks_like_value(" ".join(next_parts)):
+            return line_text, " ".join(next_parts), list(next_line["word_idxs"])
+
+    for label_len in range(min(4, len(parts)), 0, -1):
         label = " ".join(parts[:label_len])
         value_parts = parts[label_len:]
         if not value_parts:
