@@ -202,40 +202,45 @@ def detect_labelled_dates(words, lines, page, img_w, img_h, counter):
     """
     Finds date-shaped tokens and classifies each one by whichever
     date-related label (DOB / issue / expiry) appears on the *same
-    line* — checked as "does this concept's keyword appear anywhere in
-    the line", not "does it come right before the date". That
-    direction-agnostic check is what makes this correct for RTL Urdu/
-    Arabic lines, where the value can sit to either side of its label
-    depending on layout, not just after it in pixel order.
-
-    This replaces a blanket "any date-shaped text = Date of Birth"
-    detector, which used to also catch expiry/issue/validity dates and
-    mask them whenever DOB was selected.
+    line* or on a nearby line. This handles scanned cards where the
+    label and value are separated vertically.
     """
     out, seen = [], set()
+
+    def line_date_idxs(line):
+        return [i for i in line["word_idxs"] if DATE_PATTERN.search(words[i]["text"])
+                and words[i]["conf"] > 20]
+
     for li, line in enumerate(lines):
         concepts_here = [c for c in ("dob", "date_of_issue", "date_of_expiry")
                           if i18n_labels.line_matches_concept(line["text"], c)]
-        date_idxs = [i for i in line["word_idxs"] if DATE_PATTERN.search(words[i]["text"])
-                     and words[i]["conf"] > 20]
-        if not date_idxs and li + 1 < len(lines):
-            next_line = lines[li + 1]
-            date_idxs = [i for i in next_line["word_idxs"] if DATE_PATTERN.search(words[i]["text"])
-                         and words[i]["conf"] > 20]
-            if date_idxs and concepts_here:
-                for concept in concepts_here:
-                    val = " ".join(words[i]["text"] for i in date_idxs)
-                    out.append(_mk(concept, DATE_CONCEPT_LABELS[concept], "identity", val,
-                                    page, words_bbox(words, date_idxs, img_w, img_h), counter.next()))
-                seen.update(date_idxs)
-                continue
+        date_idxs = line_date_idxs(line)
+
+        if concepts_here and not date_idxs:
+            # look up to two nearby lines for a matching date value
+            for neighbor in lines[li + 1:li + 3]:
+                date_idxs = line_date_idxs(neighbor)
+                if date_idxs:
+                    break
+
+        if not concepts_here and date_idxs:
+            # if a date appears without a concept, search nearby lines for one
+            for neighbor in lines[max(0, li - 2):li]:
+                neighbor_concepts = [c for c in ("dob", "date_of_issue", "date_of_expiry")
+                                     if i18n_labels.line_matches_concept(neighbor["text"], c)]
+                if neighbor_concepts:
+                    concepts_here = neighbor_concepts
+                    break
 
         if not date_idxs:
             continue
 
         if concepts_here:
-            date_positions = [((words[i]["left"] + words[i]["right"]) / 2, i) for i in date_idxs]
-            if len(concepts_here) > 1 and len(date_positions) > 1:
+            # If multiple concepts and multiple dates appear together,
+            # assign each concept to the nearest date token when possible.
+            if len(concepts_here) > 1 and len(date_idxs) > 1:
+                date_positions = [((words[i]["left"] + words[i]["right"]) / 2, i)
+                                  for i in date_idxs]
                 concept_positions = []
                 for concept in concepts_here:
                     kw = i18n_labels.find_keyword_in_text(line["text"], concept)
