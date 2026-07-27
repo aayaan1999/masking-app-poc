@@ -32,26 +32,9 @@ def draw_redaction(draw: ImageDraw.ImageDraw, bbox):
     w, h = right - left, bottom - top
     if w <= 0 or h <= 0:
         return
+    # Draw a solid filled panel only — remove the asterisk overlay so the
+    # redaction is a plain black box (keeps original pixels overwritten).
     draw.rectangle(bbox, fill=FILL_COLOR)
-
-    # Size the asterisk text to the box height, then repeat "*" until it
-    # roughly fills the width, so a wide field (address) and a narrow one
-    # (a 4-digit PIN) both read clearly as redacted.
-    font_size = max(8, int(h * 0.6))
-    font = _font(font_size)
-    one_char_w = draw.textlength(MASK_CHAR, font=font) or (font_size * 0.6)
-    n_chars = max(3, int(w / max(1, one_char_w * 1.3)))
-    pattern = MASK_CHAR * n_chars
-
-    text_w = draw.textlength(pattern, font=font)
-    while text_w > w * 0.94 and n_chars > 1:
-        n_chars -= 1
-        pattern = MASK_CHAR * n_chars
-        text_w = draw.textlength(pattern, font=font)
-
-    tx = left + (w - text_w) / 2
-    ty = top + (h - font_size) / 2
-    draw.text((tx, ty), pattern, fill=TEXT_COLOR, font=font)
 
 
 def apply_redactions(page_image, instances):
