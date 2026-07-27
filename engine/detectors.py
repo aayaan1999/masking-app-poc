@@ -43,6 +43,13 @@ _OWNED_LABEL_PATTERNS = re.compile(
 
 _LABEL_LINE = re.compile(r'^\s*([A-Za-z][A-Za-z .\'/]{1,40}?)\s*[:\-]\s*(.+)$')
 
+_KNOWN_LABEL_TOKENS = {
+    "name", "date", "birth", "dob", "account", "number", "phone", "mobile",
+    "email", "address", "passport", "policy", "customer", "employee",
+    "license", "registration", "father", "mother", "national", "civil",
+    "emirates", "iqama", "pan", "aadhaar", "card", "id",
+}
+
 
 def _mk(field_type, display_label, category, value, page, bbox, iid):
     return {
@@ -121,6 +128,77 @@ DATE_CONCEPT_LABELS = {
 }
 
 
+def _normalize_label_text(text):
+    return re.sub(r'\s+', ' ', text or "").strip(" ,.:;()[]{}")
+
+
+def _looks_like_value(text):
+    text = _normalize_label_text(text)
+    if not text:
+        return False
+    if re.search(r'\d', text):
+        return True
+    if EMAIL_PATTERN.search(text) or PHONE_PATTERN.search(text):
+        return True
+    if DATE_PATTERN.search(text):
+        return True
+    parts = [p for p in text.split() if p]
+    if len(parts) >= 2:
+        return True
+    return len(parts) == 1 and len(parts[0]) >= 2 and parts[0].lower() not in {"the", "and", "for", "of", "to"}
+
+
+def _label_is_probable(label_text):
+    label_text = _normalize_label_text(label_text).lower()
+    if not label_text:
+        return False
+    if label_text in {"note", "important", "instructions"}:
+        return False
+    if any(token in label_text for token in _KNOWN_LABEL_TOKENS):
+        return True
+    if label_text.endswith("name") or label_text.endswith("number") or label_text.endswith("address") or label_text.endswith("id"):
+        return True
+    return False
+
+
+def _extract_label_value_pair(words, line, next_line=None):
+    line_text = _normalize_label_text(line["text"])
+    if not line_text:
+        return None
+
+    m = _LABEL_LINE.match(line_text)
+    if m:
+        label, value = m.group(1).strip(), m.group(2).strip()
+        if _label_is_probable(label) and _looks_like_value(value):
+            return label, value, list(line["word_idxs"])
+
+    parts = [words[i]["text"].strip(" ,.:;()[]{}") for i in line["word_idxs"]]
+    parts = [p for p in parts if p]
+    if len(parts) < 2:
+        if next_line is not None:
+            next_parts = [words[i]["text"].strip(" ,.:;()[]{}") for i in next_line["word_idxs"]]
+            next_parts = [p for p in next_parts if p]
+            if next_parts and _label_is_probable(line_text) and _looks_like_value(" ".join(next_parts)):
+                return line_text, " ".join(next_parts), list(next_line["word_idxs"])
+        return None
+
+    for label_len in range(1, min(4, len(parts)) + 1):
+        label = " ".join(parts[:label_len])
+        value_parts = parts[label_len:]
+        if not value_parts:
+            continue
+        value_text = " ".join(value_parts)
+        if _label_is_probable(label) and _looks_like_value(value_text):
+            return label, value_text, list(line["word_idxs"][label_len:])
+
+    if next_line is not None:
+        next_parts = [words[i]["text"].strip(" ,.:;()[]{}") for i in next_line["word_idxs"]]
+        next_parts = [p for p in next_parts if p]
+        if next_parts and _label_is_probable(line_text) and _looks_like_value(" ".join(next_parts)):
+            return line_text, " ".join(next_parts), list(next_line["word_idxs"])
+    return None
+
+
 def detect_labelled_dates(words, lines, page, img_w, img_h, counter):
     """
     Finds date-shaped tokens and classifies each one by whichever
@@ -136,11 +214,23 @@ def detect_labelled_dates(words, lines, page, img_w, img_h, counter):
     mask them whenever DOB was selected.
     """
     out, seen = [], set()
-    for line in lines:
+    for li, line in enumerate(lines):
         concepts_here = [c for c in ("dob", "date_of_issue", "date_of_expiry")
                           if i18n_labels.line_matches_concept(line["text"], c)]
         date_idxs = [i for i in line["word_idxs"] if DATE_PATTERN.search(words[i]["text"])
                      and words[i]["conf"] > 20]
+        if not date_idxs and li + 1 < len(lines):
+            next_line = lines[li + 1]
+            date_idxs = [i for i in next_line["word_idxs"] if DATE_PATTERN.search(words[i]["text"])
+                         and words[i]["conf"] > 20]
+            if date_idxs and concepts_here:
+                for concept in concepts_here:
+                    val = " ".join(words[i]["text"] for i in date_idxs)
+                    out.append(_mk(concept, DATE_CONCEPT_LABELS[concept], "identity", val,
+                                    page, words_bbox(words, date_idxs, img_w, img_h), counter.next()))
+                seen.update(date_idxs)
+                continue
+
         if not date_idxs:
             continue
 
@@ -326,28 +416,40 @@ def detect_name(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     claimed_lines = set()
     for li, line in enumerate(lines):
-        if not i18n_labels.contains_any_keyword(line["text"], NAME_KEYWORDS) or li in claimed_lines:
+        if li in claimed_lines:
             continue
-        label_idxs = {i for i in line["word_idxs"]
-                      if i18n_labels.contains_any_keyword(words[i]["text"], NAME_KEYWORDS)}
-        value_idxs = [i for i in line["word_idxs"]
-                      if i not in label_idxs and words[i]["text"].strip(" /-:|") != ""]
-        claimed_lines.add(li)
+        if not i18n_labels.contains_any_keyword(line["text"], NAME_KEYWORDS):
+            pair = _extract_label_value_pair(words, line, lines[li + 1] if li + 1 < len(lines) else None)
+            if not pair:
+                continue
+            label, value, value_idxs = pair
+            if not _label_is_probable(label) or "name" not in label.lower():
+                continue
+            value_idxs = list(value_idxs)
+        else:
+            label_idxs = {i for i in line["word_idxs"]
+                          if i18n_labels.contains_any_keyword(words[i]["text"], NAME_KEYWORDS)}
+            value_idxs = [i for i in line["word_idxs"]
+                          if i not in label_idxs and words[i]["text"].strip(" /-:|") != ""]
+            claimed_lines.add(li)
 
-        if not value_idxs and li + 1 < len(lines):
-            # Label-only line (value wraps to the next row) — same
-            # continuation guard used by detect_address.
-            nxt = lines[li + 1]
-            gap = nxt["top"] - line["bottom"]
-            avg_h = max(1, line["bottom"] - line["top"])
-            if gap < avg_h * 1.5 and not _LABEL_LINE.match(nxt["text"]):
-                value_idxs = list(nxt["word_idxs"])
-                claimed_lines.add(li + 1)
+            if not value_idxs and li + 1 < len(lines):
+                # Label-only line (value wraps to the next row) — same
+                # continuation guard used by detect_address.
+                nxt = lines[li + 1]
+                gap = nxt["top"] - line["bottom"]
+                avg_h = max(1, line["bottom"] - line["top"])
+                if gap < avg_h * 1.5 and not _LABEL_LINE.match(nxt["text"]):
+                    value_idxs = list(nxt["word_idxs"])
+                    claimed_lines.add(li + 1)
+
+            if not value_idxs:
+                continue
+            value = " ".join(words[i]["text"] for i in value_idxs)
 
         if not value_idxs:
             continue
-        val = " ".join(words[i]["text"] for i in value_idxs)
-        out.append(_mk("person_name", "Name", "identity", val,
+        out.append(_mk("person_name", "Name", "identity", value,
                         page, words_bbox(words, value_idxs, img_w, img_h), counter.next()))
         seen.update(value_idxs)
     return out, seen
@@ -369,25 +471,27 @@ def detect_generic_labels(words, lines, page, img_w, img_h, counter, already_cla
     errs toward dropping anything OCR itself wasn't confident about.
     """
     out = []
-    for line in lines:
+    for li, line in enumerate(lines):
         if any(idx in already_claimed for idx in line["word_idxs"]):
             continue
         confs = [words[i]["conf"] for i in line["word_idxs"] if words[i]["conf"] >= 0]
         if confs and (sum(confs) / len(confs)) < 45:
             continue
-        m = _LABEL_LINE.match(line["text"])
-        if not m:
+        pair = _extract_label_value_pair(words, line, lines[li + 1] if li + 1 < len(lines) else None)
+        if not pair:
             continue
-        label, value = m.group(1).strip(), m.group(2).strip()
+        label, value, value_idxs = pair
         if _OWNED_LABEL_PATTERNS.search(label) or len(value) < 2:
             continue
         if len(label) < 2 or label.lower() in {"note", "important", "instructions"}:
             continue
+        bbox = words_bbox(words, value_idxs, img_w, img_h) if value_idxs else (
+            line["left"], line["top"], line["right"], line["bottom"]
+        )
         display = " ".join(w.capitalize() for w in label.split())
         out.append(_mk(
             f"label:{label.lower()}", display, "generic", value, page,
-            (line["left"], line["top"], line["right"], line["bottom"]),
-            counter.next(),
+            bbox, counter.next(),
         ))
     return out
 
