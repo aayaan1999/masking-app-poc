@@ -1,8 +1,7 @@
-import base64
-import json
-import os
-import re
-import urllib.request
+import base64, json, os, re, urllib.request
+from io import BytesIO
+
+from .ocr import words_bbox
 
 SYSTEM_PROMPT = (
     "You are a document field extractor. Find only clearly visible PII or financial fields. "
@@ -31,58 +30,26 @@ FIELD_CATEGORIES = {
 }
 
 
-def _call_gemini_pdf(pdf_bytes, prompt):
-    """Sends raw PDF bytes directly to the Gemini API."""
+def _call_gemini(image, prompt):
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        print("Error: GOOGLE_API_KEY is not set.")
         return None
-
-    encoded_pdf = base64.b64encode(pdf_bytes).decode("ascii")
-
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=92)
     payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt},
-                    {
-                        "inline_data": {
-                            "mime_type": "application/pdf",
-                            "data": encoded_pdf,
-                        }
-                    },
-                ]
-            }
-        ],
+        "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "application/pdf", "data": base64.b64encode(buf.getvalue()).decode("ascii")}}]}],
         "generationConfig": {"temperature": 0.0},
     }
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-
     req = urllib.request.Request(
-        url,
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.load(resp)
-            text = (
-                body.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [{}])[0]
-                .get("text", "")
-            )
-            return text.strip() if isinstance(text, str) else None
-    except urllib.error.HTTPError as e:
-        # Prints full error details from Google API
-        print(f"HTTP Error {e.code}: {e.read().decode('utf-8')}")
-        return None
-    except Exception as e:
-        print(f"Request failed: {e}")
-        return None
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = json.load(resp)
+    text = body.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+    return text.strip() if isinstance(text, str) else None
 
 
 def _parse_json(text):
@@ -94,54 +61,48 @@ def _parse_json(text):
     return json.loads(text)
 
 
-def detect_gemini_fields_pdf(pdf_bytes, page_num, img_w, img_h, counter):
-    """Accepts PDF bytes directly, extracts fields via Gemini, and formats output."""
-    text = _call_gemini_pdf(pdf_bytes, SYSTEM_PROMPT)
+def _bbox_from_words(words, value, bbox, img_w, img_h):
+    if not words:
+        return (0, 0, img_w, img_h)
+    target = re.sub(r"\W+", "", (value or "").lower())
+    idxs = []
+    for i, w in enumerate(words):
+        token = re.sub(r"\W+", "", w["text"].lower())
+        if target and (target in token or token in target):
+            idxs.append(i)
+    if not idxs:
+        cx = bbox[0] + bbox[2] / 2
+        cy = bbox[1] + bbox[3] / 2
+        idxs = [min(range(len(words)), key=lambda i: abs(((words[i]["left"] + words[i]["right"]) / 2) - cx) + abs(((words[i]["top"] + words[i]["bottom"]) / 2) - cy))]
+    return words_bbox(words, idxs, img_w, img_h, pad=0)
+
+
+def detect_gemini_fields(image, words, lines, page, img_w, img_h, counter):
+    text = _call_gemini(image, SYSTEM_PROMPT)
     if not text:
         return []
-
     try:
         items = _parse_json(text)
     except Exception:
         return []
-
     out = []
     for item in items or []:
         if not isinstance(item, dict):
             continue
-
         field_type = str(item.get("field_type") or "").strip().lower().replace(" ", "_")
         value = str(item.get("value") or "").strip()
         if not value:
             continue
-
         bbox = item.get("bbox") or [0, 0, 0, 0]
         if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
             continue
-
         x, y, w, h = [float(v) for v in bbox]
-        left, top, right, bottom = (
-            int(max(0, x)),
-            int(max(0, y)),
-            int(max(0, x + w)),
-            int(max(0, y + h)),
-        )
-
-        label = str(
-            item.get("label")
-            or FIELD_LABELS.get(field_type, field_type.replace("_", " ").title())
-        )
+        left, top, right, bottom = int(max(0, x)), int(max(0, y)), int(max(0, x + w)), int(max(0, y + h))
+        if right <= left or bottom <= top:
+            left, top, right, bottom = _bbox_from_words(words, value, (left, top, right, bottom), img_w, img_h)
+        else:
+            left, top, right, bottom = _bbox_from_words(words, value, (left, top, right - left, bottom - top), img_w, img_h)
+        label = str(item.get("label") or FIELD_LABELS.get(field_type, field_type.replace("_", " ").title()))
         category = FIELD_CATEGORIES.get(field_type, "generic")
-
-        out.append(
-            {
-                "id": counter.next(),
-                "field_type": field_type,
-                "display_label": label,
-                "category": category,
-                "value": value,
-                "page": page_num,
-                "bbox": (left, top, right, bottom),
-            }
-        )
+        out.append({"id": counter.next(), "field_type": field_type, "display_label": label, "category": category, "value": value, "page": page, "bbox": (left, top, right, bottom)})
     return out
