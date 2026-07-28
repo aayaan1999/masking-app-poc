@@ -11,7 +11,7 @@ _ALL_STOPWORDS = {
     "fields", "pii", "records", "data", "information", "details",
     "aadhaar", "aadhar", "pan", "kyc", "documents", "entries",
 }
-_ROW_SCOPE_WORDS = re.compile(r'record|transaction|entr|statement|row|line|detail', re.I)
+_ROW_SCOPE_WORDS = re.compile(r'\b(?:full\s+row|full\s+rows|row|rows|line|lines|statement|statements|detail|details|record|transaction|entry)\b', re.I)
 _ACTION_WORDS = re.compile(r'\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b', re.I)
 _NAME_HINT_WORDS = ("name", "person", "customer", "employee")
 
@@ -21,70 +21,61 @@ def extract_custom_targets(text: str):
     if not text:
         return []
 
-    targets = []
     scope = "row" if _ROW_SCOPE_WORDS.search(text) else "token"
+    targets = []
+    seen_terms = set()
 
-    # 1. Look for quoted text: "word" or 'word'
+    def add_target(term, mode):
+        term = term.strip().strip('.,;:"\\\' ')
+        if not term:
+            return
+        term = re.sub(r"\s+", " ", term).strip()
+        if term.lower() in _ALL_STOPWORDS:
+            return
+        if re.fullmatch(r"(?:the\s+)?(?:name|person|customer|employee|record|records|row|rows|entry|entries|address|passport|id|date|dob|issue|expiry|number|code|value|company|organization|vendor|business|field|label|document|item|line|statement|transaction|transactions|description|full|all)(?:\s+.*)?", term, re.I):
+            return
+        if re.fullmatch(r"(?:mask|redact|hide|remove|blackout|delete|censor|scrub|all)\b.*", term, re.I):
+            return
+        if term.lower() not in seen_terms:
+            seen_terms.add(term.lower())
+            targets.append((term, mode))
+
     for pat in (re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'")):
         for m in pat.finditer(text):
-            term = m.group(1).strip()
-            if term:
-                targets.append((term, scope))
+            add_target(m.group(1), scope)
 
-    # 2. Look for possessive + concept: "John's record"
-    for m in re.finditer(
-        r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\'s\s+(record|transaction|entr|detail|data|statement)",
-        text):
-        targets.append((m.group(1), "row"))
+    action_pattern = re.compile(r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b", re.I)
+    for match in action_pattern.finditer(text):
+        start = match.end()
+        next_action = action_pattern.search(text[start:])
+        end = len(text) if next_action is None else start + next_action.start()
+        fragment = text[start:end]
+        fragment = re.split(r"\band\b|\bor\b|\bthen\b", fragment, maxsplit=1)[0]
+        fragment = fragment.strip()
 
-    # 3. Look for "record[s]? of/for [Name]"
-    for m in re.finditer(
-        r'(?:record[s]?|transaction[s]?|entries)\s+(?:of|for)\s+'
-        r'([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)', text):
-        targets.append((m.group(1), "row"))
+        quoted_match = re.search(r'"([^"]+)"|\'([^\']+)\'', fragment)
+        if quoted_match:
+            add_target(quoted_match.group(1) or quoted_match.group(2), scope)
+            continue
 
-    # 4. Look for mask/redact commands with names or values.
-    command_patterns = (
-        re.compile(
-            r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b\s+"
-            r"(?:the\s+)?(?:name\s+|person\s+|customer\s+|employee\s+|record\s+|row\s+|entry\s+|address\s+|passport\s+|id\s+|date\s+|dob\s+|issue\s+|expiry\s+|number\s+|code\s+|value\s+|company\s+|organization\s+|vendor\s+|business\s+|field\s+|label\s+|document\s+|item\s+|line\s+|statement\s+|transactions?\s+)?"
-            r"(?:of\s+|for\s+|called\s+|is\s+|named\s+)?"
-            r"(?:\"([^\"]+)\"|'([^']+)'|([A-Za-z0-9][A-Za-z0-9\s\-\/&]+?))"
-            r"(?=$|\s+(?:everywhere|throughout|in the document|from the document|on the page|now|please|thanks)|[.,])",
-            re.I),
-        re.compile(
-            r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b\s+"
-            r"(?:\"([^\"]+)\"|'([^']+)'|([A-Za-z0-9][A-Za-z0-9\s\-\/&]+?))"
-            r"(?=$|\s+(?:everywhere|throughout|in the document|from the document|on the page|now|please|thanks)|[.,])",
-            re.I),
-    )
-    for pattern in command_patterns:
-        for m in pattern.finditer(text):
-            term = next((group for group in m.groups() if group), None)
-            if term:
-                term = term.strip().strip('.,;:"\\\' ')
-                if term and term.lower() not in _ALL_STOPWORDS:
-                    targets.append((term, scope))
+        fragment = re.sub(r"^\s*(?:the\s+)?(?:name|person|customer|employee)\s+", "", fragment, flags=re.I)
+        fragment = re.sub(r"^\s*(?:all|full|the)\s+", "", fragment, flags=re.I)
+        fragment = re.sub(r"^\s*(?:record|records|row|rows|entry|entries|transaction|transactions|detail|details|statement|line|item|document|description)\s+", "", fragment, flags=re.I)
+        fragment = re.sub(r"^\s*(?:for|of|called|named|is)\s+", "", fragment, flags=re.I)
+        fragment = re.sub(r"\s+(?:everywhere|throughout|in the document|from the document|on the page|now|please|thanks).*$", "", fragment, flags=re.I)
+        fragment = re.split(r"[.,;:]", fragment, maxsplit=1)[0].strip().strip('.,;:"\\\' ')
+        if fragment and not re.fullmatch(r"(?:the|all|full|row|rows|record|records|entry|entries|transaction|transactions|detail|details|statement|line|item|document|description)", fragment, re.I):
+            add_target(fragment, scope)
 
-    # 5. Look for "all [Word]"
-    for m in re.finditer(r'\ball\s+([A-Za-z0-9][A-Za-z0-9\s\-\/&]{0,120}?)\b', text, re.I):
-        term = m.group(1).strip()
-        if term.lower() not in _ALL_STOPWORDS:
-            targets.append((term, scope))
+    if not targets:
+        simple_term = text.strip()
+        simple_term = re.sub(r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub|all)\b\s*", "", simple_term, flags=re.I).strip()
+        simple_term = re.sub(r"\s+(?:everywhere|throughout|in the document|from the document|on the page|now|please|thanks).*$", "", simple_term, flags=re.I)
+        simple_term = re.split(r"[.,;:]", simple_term, maxsplit=1)[0].strip().strip('.,;:"\\\' ')
+        if simple_term and len(simple_term) > 1:
+            add_target(simple_term, "token")
 
-    if targets:
-        return targets
-
-    # 6. Fallback: strip action words and use remaining phrase
-    simple_term = text.strip()
-    if simple_term and len(simple_term) > 2:
-        simple_term = re.sub(r'\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub|all)\b\s*', '', simple_term, flags=re.I).strip()
-        if simple_term and not any(stop in simple_term.lower() for stop in _ALL_STOPWORDS):
-            simple_term = simple_term.strip('.,;:"\\\' ')
-            if simple_term and len(simple_term) > 1:
-                return [(simple_term, "token")]
-
-    return targets
+    return sorted(targets, key=lambda item: text.lower().find(item[0].lower()))
 
 
 def _line_bbox(words, lines, word_idx, img_w, img_h):

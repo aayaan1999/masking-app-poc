@@ -72,6 +72,45 @@ def test_gemini_detector_parses_json_and_converts_bbox(monkeypatch):
     assert instances[0]["bbox"] == (10, 20, 90, 35)
 
 
+def test_gemini_prompt_includes_document_and_ocr_guidance(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+
+    captured = {}
+
+    def fake_call(image, prompt):
+        captured["prompt"] = prompt
+        return '[]'
+
+    monkeypatch.setattr(gemini_detector, "_call_gemini", fake_call)
+
+    gemini_detector.detect_gemini_fields(
+        Image.new("RGB", (100, 100)),
+        [_make_word("Email", 10, 10, 40, 24, 90, 0)],
+        [_make_line(0, "Email", 10, 10, 40, 24, [0])],
+        0, 100, 100, detectors.InstanceCounter(),
+    )
+
+    prompt = captured["prompt"]
+    assert "document" in prompt.lower()
+    assert "ocr" in prompt.lower()
+    assert "visible values" in prompt.lower()
+
+
+def test_gemini_detector_parses_wrapped_json_payload(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setattr(gemini_detector, "_call_gemini", lambda image, prompt: '{"fields": [{"field_type": "email", "value": "john@example.com", "bbox": [10, 20, 80, 15], "label": "Email Address", "page_number": 1}]}')
+
+    words = [_make_word("john@example.com", 10, 20, 90, 35, 90, 0)]
+    lines = [_make_line(0, "john@example.com", 10, 20, 90, 35, [0])]
+
+    instances = gemini_detector.detect_gemini_fields(
+        Image.new("RGB", (100, 100)), words, lines, 0, 100, 100, detectors.InstanceCounter(),
+    )
+
+    assert len(instances) == 1
+    assert instances[0]["field_type"] == "email"
+
+
 def test_gemini_pdf_bytes_wrapper_returns_empty_when_api_unavailable(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
