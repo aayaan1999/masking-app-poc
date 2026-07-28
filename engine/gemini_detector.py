@@ -9,25 +9,22 @@ from io import BytesIO
 from .ocr import words_bbox
 
 SYSTEM_PROMPT = r"""
-You are an expert document data extraction system. Scan and process every page of the provided document thoroughly from start to finish. Extract all visible identification, demographic, and financial fields. Do not omit any data fields regardless of document length.
+You are an expert document data extraction system. Scan and process every page of the provided document thoroughly from start to finish. Extract all visible identification, demographic, and financial fields and visible values. Do not omit any clearly visible data fields.
 
-Return your response strictly as a JSON array of objects. Do not include markdown code block formatting (such as ```json), introductory text, or explanatory text. 
+Return your response strictly as JSON. Do not include markdown fences, explanatory text, or any wrapper text.
 
-Each object in the array must contain these exact keys:
-- "field_type": String. Must strictly be one of: "email", "phone", "person_name", "date", "account_number", "routing_number", "id_number", "nationality", "sex", "occupation", "organization", "location".
-- "value": String. The exact text extracted from the document.
-- "bbox": Array of four integers [x, y, width, height] representing the bounding box in pixel coordinates.
-- "label": String. The contextual text label or header near the field (e.g., "ID Number / رقم الهوية", "Occupation:"). If no explicit label exists, use null.
+If you return a single object, wrap it as an array under a key such as "fields" or "data". The final result must be a JSON array of objects.
+
+Each object must contain these exact keys:
+- "field_type": String. Use one of: "email", "phone", "person_name", "date", "account_number", "routing_number", "id_number", "nationality", "sex", "occupation", "organization", "location", "issue_date", "expiry_date", "issuing_authority", "place_of_issue".
+- "value": String. The exact visible text for the field.
+- "bbox": Array of four integers [x, y, width, height] in pixel coordinates relative to the page image.
+- "label": String or null. The nearest contextual label or header text.
 - "page_number": Integer. The 1-indexed page number where the field appears.
 
-Validation Rules:
-1. "field_type" categorization mapping:
-   - Use "id_number" for identity card numbers, document numbers, or card serial numbers.
-   - Use "organization" for employer names, companies, or authorities.
-   - Use "location" for addresses, cities of issuance, or places of birth.
-   - Use "sex" for gender indicators (e.g., M, F, Male, Female).
-2. If a field spans multiple lines, treat it as a single extraction with a bounding box that encompasses the entire text string.
-3. If no valid fields are found, return an empty array: []
+For GCC identity documents, include fields such as ID Number, Name, Date of Birth, Nationality, Sex, Occupation, Employer, Place of Issue, Issuing Authority, Issue Date, and Expiry Date when they are visible.
+
+If a field is not clearly visible or present, skip it. If no fields are found, return an empty array: []
 """
 
 FIELD_LABELS = {
@@ -45,6 +42,10 @@ FIELD_LABELS = {
     "occupation": "Occupation / Job Title",
     "organization": "Sponsor / Employer / Company",
     "location": "Place of Issue / Address / City",
+    "issue_date": "Issue Date",
+    "expiry_date": "Expiry Date",
+    "issuing_authority": "Issuing Authority",
+    "place_of_issue": "Place of Issue",
 }
 
 FIELD_CATEGORIES = {
@@ -62,6 +63,10 @@ FIELD_CATEGORIES = {
     "occupation": "employment",
     "organization": "employment",
     "location": "geographic",
+    "issue_date": "identity",
+    "expiry_date": "identity",
+    "issuing_authority": "employment",
+    "place_of_issue": "geographic",
 }
 
 
@@ -129,7 +134,91 @@ def _parse_json(text):
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
-    return json.loads(text)
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+
+    if isinstance(payload, dict):
+        for key in ("fields", "data", "results", "items", "output"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                return candidate
+        # If the object itself looks like one field, return it as a single-item list.
+        if "field_type" in payload and "value" in payload:
+            return [payload]
+        return []
+    if isinstance(payload, list):
+        return payload
+    return []
+
+
+def _normalize_field_type(field_type):
+    normalized = str(field_type or "").strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "name": "person_name",
+        "full_name": "person_name",
+        "customer_name": "person_name",
+        "dob": "date",
+        "date_of_birth": "date",
+        "birth_date": "date",
+        "expiry_date": "expiry_date",
+        "issue_date": "issue_date",
+        "issued_at": "issue_date",
+        "email_address": "email",
+        "phone_number": "phone",
+        "mobile_number": "phone",
+        "account": "account_number",
+        "account_no": "account_number",
+        "routing": "routing_number",
+        "routing_no": "routing_number",
+        "id": "id_number",
+        "passport_number": "id_number",
+        "national_id": "id_number",
+        "civil_id": "id_number",
+        "emirates_id": "id_number",
+        "gender": "sex",
+        "job": "occupation",
+        "employer": "organization",
+        "company": "organization",
+        "authority": "organization",
+        "place_of_issue": "place_of_issue",
+        "issued_by": "issuing_authority",
+        "issuing_authority": "issuing_authority",
+        "address": "location",
+        "city": "location",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _coerce_bbox(raw_bbox, img_w, img_h):
+    if isinstance(raw_bbox, dict):
+        x = raw_bbox.get("x", raw_bbox.get("left", 0))
+        y = raw_bbox.get("y", raw_bbox.get("top", 0))
+        width = raw_bbox.get("width", raw_bbox.get("w", 0))
+        height = raw_bbox.get("height", raw_bbox.get("h", 0))
+        raw_bbox = [x, y, width, height]
+
+    if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+        return (0, 0, img_w, img_h)
+
+    values = [float(v) for v in raw_bbox]
+    if any(v > max(img_w, img_h) for v in values):
+        ymin, xmin, ymax, xmax = values
+        px_x = (xmin / 1000.0) * img_w
+        px_y = (ymin / 1000.0) * img_h
+        px_w = ((xmax - xmin) / 1000.0) * img_w
+        px_h = ((ymax - ymin) / 1000.0) * img_h
+        left, top = int(max(0, px_x)), int(max(0, px_y))
+        right, bottom = int(max(left, px_x + px_w)), int(max(top, px_y + px_h))
+        return (left, top, right, bottom)
+
+    x, y, width, height = values
+    left, top = int(max(0, x)), int(max(0, y))
+    right = int(max(left, x + width))
+    bottom = int(max(top, y + height))
+    return (left, top, right, bottom)
 
 
 def _bbox_from_words(words, value, bbox, img_w, img_h):
@@ -149,40 +238,33 @@ def _bbox_from_words(words, value, bbox, img_w, img_h):
 
 
 def detect_gemini_fields(image, words, lines, page, img_w, img_h, counter):
-    text = _call_gemini(image, SYSTEM_PROMPT)
+    ocr_context = "\n".join(line.get("text", "").strip() for line in lines if line.get("text", "").strip())
+    prompt = SYSTEM_PROMPT
+    if ocr_context:
+        prompt = f"{prompt}\n\nUse this OCR text from the page exactly as additional context:\n{ocr_context[:6000]}"
+
+    text = _call_gemini(image, prompt)
     if not text:
         return []
     try:
         items = _parse_json(text)
     except Exception:
         return []
-        
+
     out = []
     for item in items or []:
         if not isinstance(item, dict):
             continue
             
-        field_type = str(item.get("field_type") or "").strip().lower().replace(" ", "_")
-        value = str(item.get("value") or "").strip()
+        field_type = _normalize_field_type(item.get("field_type") or item.get("type") or item.get("label") or "")
+        value = str(item.get("value") or item.get("text") or item.get("content") or "").strip()
         if not value:
             continue
             
-        bbox = item.get("bbox") or [0, 0, 0, 0]
-        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
-            continue
+        bbox = item.get("bbox") or item.get("bounding_box") or item.get("box") or [0, 0, 0, 0]
+        bbox = _coerce_bbox(bbox, img_w, img_h)
+        left, top, right, bottom = bbox
 
-        # Convert normalized 0-1000 scale [ymin, xmin, ymax, xmax] to pixel [x, y, w, h]
-        ymin, xmin, ymax, xmax = [float(v) for v in bbox]
-        
-        # Scale back to original image dimensions
-        px_x = (xmin / 1000.0) * img_w
-        px_y = (ymin / 1000.0) * img_h
-        px_w = ((xmax - xmin) / 1000.0) * img_w
-        px_h = ((ymax - ymin) / 1000.0) * img_h
-
-        left, top, right, bottom = int(max(0, px_x)), int(max(0, px_y)), int(max(0, px_x + px_w)), int(max(0, px_y + px_h))
-
-        # Perform exact word-boundary refinement using OCR words
         if right <= left or bottom <= top:
             left, top, right, bottom = _bbox_from_words(words, value, (left, top, img_w, img_h), img_w, img_h)
         else:

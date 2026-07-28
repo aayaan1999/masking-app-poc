@@ -111,6 +111,37 @@ def test_gemini_detector_parses_wrapped_json_payload(monkeypatch):
     assert instances[0]["field_type"] == "email"
 
 
+def test_gemini_detector_normalizes_gcc_fields(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setattr(
+        gemini_detector,
+        "_call_gemini",
+        lambda image, prompt: '[{"field_type": "Issue Date", "value": "01-01-2025", "bbox": [10, 20, 80, 15], "label": "Issue Date"},'
+                             + '{"field_type": "Expiry Date", "value": "01-01-2030", "bbox": [10, 40, 80, 15]},'
+                             + '{"field_type": "Nationality", "value": "UAE", "bbox": [10, 60, 80, 15]}]'
+    )
+
+    words = [
+        _make_word("01-01-2025", 10, 20, 90, 35, 90, 0),
+        _make_word("01-01-2030", 10, 40, 90, 55, 90, 0),
+        _make_word("UAE", 10, 60, 40, 75, 90, 0),
+    ]
+    lines = [
+        _make_line(0, "01-01-2025", 10, 20, 90, 35, [0]),
+        _make_line(1, "01-01-2030", 10, 40, 90, 55, [1]),
+        _make_line(2, "UAE", 10, 60, 40, 75, [2]),
+    ]
+
+    instances = gemini_detector.detect_gemini_fields(
+        Image.new("RGB", (100, 100)), words, lines, 0, 100, 100, detectors.InstanceCounter(),
+    )
+
+    assert {inst["field_type"] for inst in instances} == {"issue_date", "expiry_date", "nationality"}
+    assert any(inst["display_label"] == "Issue Date" and inst["value"] == "01-01-2025" for inst in instances)
+    assert any(inst["display_label"] == "Expiry Date" and inst["value"] == "01-01-2030" for inst in instances)
+    assert any(inst["display_label"] == "Nationality" and inst["value"] == "UAE" for inst in instances)
+
+
 def test_gemini_pdf_bytes_wrapper_returns_empty_when_api_unavailable(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
