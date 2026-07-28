@@ -129,8 +129,16 @@ def ocr_page(image):
         if not text or not text.strip():
             continue
         text = _normalize_digits(text)
-        left, top = raw["left"][i], raw["top"][i]
-        width, height = raw["width"][i], raw["height"][i]
+        try:
+            left = int(raw["left"][i]) if raw["left"][i] not in (None, "", -1) else 0
+            top = int(raw["top"][i]) if raw["top"][i] not in (None, "", -1) else 0
+            width = int(raw["width"][i]) if raw["width"][i] not in (None, "", -1) else 0
+            height = int(raw["height"][i]) if raw["height"][i] not in (None, "", -1) else 0
+        except (ValueError, TypeError):
+            left, top, width, height = 0, 0, 0, 0
+        # Skip words with invalid dimensions
+        if width <= 0 or height <= 0:
+            continue
         try:
             conf_val = raw["conf"][i]
             if conf_val in ("-1", -1, "", None):
