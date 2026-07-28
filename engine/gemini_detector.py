@@ -78,7 +78,7 @@ def _call_gemini(image_or_bytes, prompt):
             },
         }
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={api_key}"
 
         req = urllib.request.Request(
             url,
