@@ -13,6 +13,7 @@ _ALL_STOPWORDS = {
     "aadhaar", "aadhar", "pan", "kyc", "documents", "entries",
 }
 _ROW_SCOPE_WORDS = re.compile(r'record|transaction|entr|statement|row|line|detail', re.I)
+_ACTION_WORDS = re.compile(r'\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b', re.I)
 _NAME_HINT_WORDS = ("name", "person", "customer", "employee")
 
 
@@ -28,7 +29,7 @@ def extract_custom_targets(text: str):
     for pat in (re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'")):
         for m in pat.finditer(text):
             term = m.group(1).strip()
-            if term and not term.lower().endswith("s"):
+            if term:
                 targets.append((term, scope))
     if targets:
         return targets
@@ -47,15 +48,15 @@ def extract_custom_targets(text: str):
     if m:
         return [(m.group(1), "row")]
 
-    # 4. Look for "mask/hide/redact name/person/employee [Name]"
+    # 4. Look for mask/redact commands with names or values
     for pattern in (
-        re.compile(r"\b(?:name|person|customer|employee)\s+(?:is|was|:)?\s*([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})", re.I),
-        re.compile(r"\b(?:mask|redact|hide|blackout|remove)\s+(?:the\s+)?(?:name|person|customer|employee)?\s*(?:called\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})", re.I),
+        re.compile(r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b\s+(?:the\s+)?(?:name\s+)?(?:of\s+)?([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)", re.I),
+        re.compile(r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)", re.I),
     ):
         m = pattern.search(text)
         if m:
             term = m.group(1).strip()
-            if term.lower() not in _ALL_STOPWORDS:
+            if term and term.lower() not in _ALL_STOPWORDS:
                 return [(term, scope)]
 
     # 5. Look for "all [Word]"
@@ -63,17 +64,11 @@ def extract_custom_targets(text: str):
     if m and m.group(1).lower() not in _ALL_STOPWORDS:
         return [(m.group(1), scope)]
 
-    # 6. Fallback: treat the entire input as a simple term if it looks like a word
-    # (doesn't contain action words, allows masking simple terms like "Product")
+    # 6. Fallback: strip action words and use remaining phrase
     simple_term = text.strip()
     if simple_term and len(simple_term) > 2:
-        # Remove common action words to extract the target term
-        for action in ["mask", "redact", "hide", "blackout", "remove", "all"]:
-            simple_term = re.sub(rf'\b{action}\b\s*', '', simple_term, flags=re.I).strip()
-        
-        # If we have something left, use it
+        simple_term = re.sub(r'\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub|all)\b\s*', '', simple_term, flags=re.I).strip()
         if simple_term and not any(stop in simple_term.lower() for stop in _ALL_STOPWORDS):
-            # Clean up remaining punctuation
             simple_term = simple_term.strip('.,;:"\'\s')
             if simple_term and len(simple_term) > 1:
                 return [(simple_term, "token")]
