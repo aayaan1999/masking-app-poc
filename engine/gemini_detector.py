@@ -9,10 +9,16 @@ from io import BytesIO
 from .ocr import words_bbox
 
 SYSTEM_PROMPT = (
-    "You are a document field extractor. Find only clearly visible PII or financial fields. "
-    "Return strict JSON as an array of objects with keys: field_type, value, bbox, label.\n"
-    "bbox must be normalized box coordinates on a 0-1000 scale in format: [ymin, xmin, ymax, xmax].\n"
-    "Use field_type values: email, phone, person_name, date, account_number, routing_number, id_number."
+    "You are an expert document field extractor. Scan and process all pages of "
+    "the provided document thoroughly from start to finish. Extract every clearly "
+    "visible PII or financial field matching the requested types, ensuring nothing "
+    "is missed regardless of page length.\n"
+    "Return strict JSON as an array of objects containing these exact keys: "
+    "field_type, value, bbox, label, and page_number.\n\n"
+    "bbox must be [x, y, width, height] in pixel coordinates.\n"
+    "page_number must indicate which page the field appears on (1-indexed).\n"
+    "Use only these field_type values: email, phone, person_name, date, "
+    "account_number, routing_number, id_number."
 )
 
 FIELD_LABELS = {
