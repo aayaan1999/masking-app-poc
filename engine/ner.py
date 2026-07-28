@@ -70,7 +70,7 @@ def detect_entities(words, lines, page, img_w, img_h, counter, already_claimed):
         # models can't read, e.g. Arabic without an Arabic pack
         # installed) — feeding that into an English NER model tends to
         # produce nonsense "entities" rather than real ones, so skip it.
-        confs = [words[i]["conf"] for i in line["word_idxs"] if words[i]["conf"] >= 0]
+        confs = [words[i]["conf"] for i in line["word_idxs"] if words[i]["conf"] is not None and words[i]["conf"] >= 0]
         if confs and (sum(confs) / len(confs)) < 50:
             continue
 

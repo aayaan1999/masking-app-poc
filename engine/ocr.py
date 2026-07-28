@@ -131,11 +131,19 @@ def ocr_page(image):
         text = _normalize_digits(text)
         left, top = raw["left"][i], raw["top"][i]
         width, height = raw["width"][i], raw["height"][i]
+        try:
+            conf_val = raw["conf"][i]
+            if conf_val in ("-1", -1, "", None):
+                conf = -1
+            else:
+                conf = int(float(conf_val))
+        except (ValueError, TypeError):
+            conf = -1
         words.append({
             "text": text,
             "left": left, "top": top, "width": width, "height": height,
             "right": left + width, "bottom": top + height,
-            "conf": int(float(raw["conf"][i])) if raw["conf"][i] not in ("-1", -1) else -1,
+            "conf": conf,
         })
 
     clusters = _cluster_into_lines(words)

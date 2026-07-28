@@ -73,7 +73,7 @@ def detect_aadhaar_number(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     line_text_by_key = {l["key"]: l["text"] for l in lines}
     for i, w in enumerate(words):
-        if i in seen or w["conf"] < 40:
+        if i in seen or (w["conf"] is None or w["conf"] < 40):
             continue
         t = w["text"]
         # A bare 12-digit number is ambiguous with a bank account number —
@@ -108,7 +108,7 @@ def detect_aadhaar_number(words, lines, page, img_w, img_h, counter):
 def detect_pan_number(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     for i, w in enumerate(words):
-        if PAN_PATTERN.search(w["text"]) and w["conf"] > 10:
+        if PAN_PATTERN.search(w["text"]) and (w["conf"] is not None and w["conf"] > 10):
             out.append(_mk("pan_number", "PAN Number", "identity", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
@@ -220,7 +220,7 @@ def detect_labelled_dates(words, lines, page, img_w, img_h, counter):
 
     def line_date_idxs(line):
         return [i for i in line["word_idxs"] if DATE_PATTERN.search(words[i]["text"])
-                and words[i]["conf"] > 20]
+                and (words[i]["conf"] is not None and words[i]["conf"] > 20)]
 
     for li, line in enumerate(lines):
         concepts_here = [c for c in ("dob", "date_of_issue", "date_of_expiry")
@@ -347,7 +347,7 @@ def reassociate_unlabelled_dates(instances, lines, words):
 def detect_phone(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     for i, w in enumerate(words):
-        if PHONE_PATTERN.search(w["text"]) and w["conf"] > 35:
+        if PHONE_PATTERN.search(w["text"]) and (w["conf"] is not None and w["conf"] > 35):
             out.append(_mk("phone_number", "Phone Number", "contact", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
@@ -357,7 +357,7 @@ def detect_phone(words, lines, page, img_w, img_h, counter):
 def detect_email(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     for i, w in enumerate(words):
-        if EMAIL_PATTERN.search(w["text"]) and w["conf"] > 35:
+        if EMAIL_PATTERN.search(w["text"]) and (w["conf"] is not None and w["conf"] > 35):
             out.append(_mk("email", "Email Address", "contact", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
@@ -371,17 +371,17 @@ def detect_card_number(words, lines, page, img_w, img_h, counter):
         if i in seen:
             continue
         w = words[i]
-        if CARD_FULL.match(w["text"]) and w["conf"] > 15 and not (
+        if CARD_FULL.match(w["text"]) and (w["conf"] is not None and w["conf"] > 15) and not (
                 len(w["text"]) == 15 and w["text"].startswith("784")):
             out.append(_mk("credit_card_number", "Card Number", "financial", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
             continue
-        if CARD_GROUP_4.match(w["text"]) and w["conf"] > 25:
+        if CARD_GROUP_4.match(w["text"]) and (w["conf"] is not None and w["conf"] > 25):
             group = [i]
             j = i + 1
             while (j < n and len(group) < 4 and CARD_GROUP_4.match(words[j]["text"])
-                   and words[j]["conf"] > 25 and words[j]["line_key"] == w["line_key"]):
+                   and (words[j]["conf"] is not None and words[j]["conf"] > 25) and words[j]["line_key"] == w["line_key"]):
                 group.append(j)
                 j += 1
             if len(group) >= 3:
@@ -428,7 +428,7 @@ def detect_address(words, lines, page, img_w, img_h, counter):
             continue
         tl = w["text"].lower()
         if (any(kw in tl for kw in ["s/o", "w/o", "d/o", "village", "dist", "taluk"])
-                or PIN_FULLTOKEN.match(w["text"])) and w["conf"] > 25:
+                or PIN_FULLTOKEN.match(w["text"])) and (w["conf"] is not None and w["conf"] > 25):
             out.append(_mk("address", "Address", "contact", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
@@ -505,7 +505,7 @@ def detect_generic_labels(words, lines, page, img_w, img_h, counter, already_cla
     for li, line in enumerate(lines):
         if any(idx in already_claimed for idx in line["word_idxs"]):
             continue
-        confs = [words[i]["conf"] for i in line["word_idxs"] if words[i]["conf"] >= 0]
+        confs = [words[i]["conf"] for i in line["word_idxs"] if words[i]["conf"] is not None and words[i]["conf"] >= 0]
         if confs and (sum(confs) / len(confs)) < 45:
             continue
         pair = _extract_label_value_pair(words, line, lines[li + 1] if li + 1 < len(lines) else None)

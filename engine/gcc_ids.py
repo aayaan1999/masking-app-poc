@@ -44,7 +44,7 @@ def _line_has_concept(line_text, concept):
 def detect_emirates_id(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     for i, w in enumerate(words):
-        if EMIRATES_ID.search(w["text"]) and w["conf"] > 15:
+        if EMIRATES_ID.search(w["text"]) and (w["conf"] is not None and w["conf"] > 15):
             out.append({
                 "id": counter.next(), "field_type": "national_id_uae",
                 "display_label": "Emirates ID Number", "category": "identity",
@@ -68,7 +68,7 @@ def detect_gcc_national_id(words, lines, page, img_w, img_h, counter, already_cl
             if i in already_claimed or i in seen:
                 continue
             t = words[i]["text"]
-            if any(p.match(t) for p in _AMBIGUOUS_ID_PATTERNS) and words[i]["conf"] > 20:
+            if any(p.match(t) for p in _AMBIGUOUS_ID_PATTERNS) and (words[i]["conf"] is not None and words[i]["conf"] > 20):
                 out.append({
                     "id": counter.next(), "field_type": "national_id",
                     "display_label": "National / Civil ID Number", "category": "identity",
@@ -93,7 +93,7 @@ def detect_passport_number(words, lines, page, img_w, img_h, counter, already_cl
             if i in already_claimed or i in seen:
                 continue
             t = words[i]["text"]
-            if (PASSPORT_ALNUM.match(t) or PASSPORT_NUMERIC.match(t)) and words[i]["conf"] > 20:
+            if (PASSPORT_ALNUM.match(t) or PASSPORT_NUMERIC.match(t)) and (words[i]["conf"] is not None and words[i]["conf"] > 20):
                 out.append({
                     "id": counter.next(), "field_type": "passport_number",
                     "display_label": "Passport Number", "category": "identity",
