@@ -6,6 +6,7 @@ Ties the whole thing together:
   render_masked_pdf() page images + chosen instances -> masked PDF file
 """
 
+import re
 from . import ocr, detectors, tables, ner, custom, gcc_ids
 from .detectors import InstanceCounter
 from .gemini_detector import detect_gemini_fields
@@ -87,18 +88,49 @@ def run_custom_search(pdf_words_lines, text):
     pdf_words_lines: list of (words, lines, img_w, img_h) per page, as
     produced while extracting. text: free-text instruction string.
     Returns a list of new instances for whatever terms it finds.
+    
+    Supports:
+    - Simple words: "Product" → finds and masks "Product"
+    - Quoted terms: "mask this term"
+    - Label:Value format: "Product Code: ABC123" → masks the value
     """
     targets = custom.extract_custom_targets(text)
-    if not targets:
+    label_value_pairs = _extract_label_value_pairs(text)
+    
+    if not targets and not label_value_pairs:
         return []
+    
     counter = InstanceCounter()
     counter.n = 900000  # keep custom ids from colliding with extract-time ids
     found = []
+    
     for page_idx, (words, lines, img_w, img_h) in enumerate(pdf_words_lines):
+        # Handle simple word/phrase targets
         for term, mode in targets:
             found += custom.find_custom_target_instances(
                 words, lines, page_idx, img_w, img_h, term, mode, counter)
+        
+        # Handle label:value patterns
+        for label, value in label_value_pairs:
+            found += custom.find_custom_label_value_instances(
+                words, lines, page_idx, img_w, img_h, label, value, counter)
+    
     return found
+
+
+def _extract_label_value_pairs(text: str):
+    """
+    Extracts label:value or label = value patterns from instructions.
+    Returns list of (label, value) tuples.
+    """
+    pairs = []
+    # Match patterns like "Product Code: ABC123" or "Product = XYZ"
+    for m in re.finditer(r'([A-Za-z][A-Za-z\s]+?)\s*[:=]\s*([A-Za-z0-9\-\s]+?)(?:[,;\n]|$)', text):
+        label = m.group(1).strip()
+        value = m.group(2).strip()
+        if label and value and len(label) > 1 and len(value) > 1:
+            pairs.append((label, value))
+    return pairs
 
 
 def group_for_ui(instances):

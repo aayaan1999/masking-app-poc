@@ -24,6 +24,7 @@ def extract_custom_targets(text: str):
     targets = []
     scope = "row" if _ROW_SCOPE_WORDS.search(text) else "token"
 
+    # 1. Look for quoted text: "word" or 'word'
     for pat in (re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'")):
         for m in pat.finditer(text):
             term = m.group(1).strip()
@@ -32,18 +33,21 @@ def extract_custom_targets(text: str):
     if targets:
         return targets
 
+    # 2. Look for possessive + concept: "John's record"
     m = re.search(
         r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\'s\s+"
         r"(record|transaction|entr|detail|data|statement)", text)
     if m:
         return [(m.group(1), "row")]
 
+    # 3. Look for "record[s]? of/for [Name]"
     m = re.search(
         r'(?:record[s]?|transaction[s]?|entries)\s+(?:of|for)\s+'
         r'([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)', text)
     if m:
         return [(m.group(1), "row")]
 
+    # 4. Look for "mask/hide/redact name/person/employee [Name]"
     for pattern in (
         re.compile(r"\b(?:name|person|customer|employee)\s+(?:is|was|:)?\s*([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})", re.I),
         re.compile(r"\b(?:mask|redact|hide|blackout|remove)\s+(?:the\s+)?(?:name|person|customer|employee)?\s*(?:called\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})", re.I),
@@ -54,9 +58,25 @@ def extract_custom_targets(text: str):
             if term.lower() not in _ALL_STOPWORDS:
                 return [(term, scope)]
 
+    # 5. Look for "all [Word]"
     m = re.search(r'\ball\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})\b', text)
     if m and m.group(1).lower() not in _ALL_STOPWORDS:
         return [(m.group(1), scope)]
+
+    # 6. Fallback: treat the entire input as a simple term if it looks like a word
+    # (doesn't contain action words, allows masking simple terms like "Product")
+    simple_term = text.strip()
+    if simple_term and len(simple_term) > 2:
+        # Remove common action words to extract the target term
+        for action in ["mask", "redact", "hide", "blackout", "remove", "all"]:
+            simple_term = re.sub(rf'\b{action}\b\s*', '', simple_term, flags=re.I).strip()
+        
+        # If we have something left, use it
+        if simple_term and not any(stop in simple_term.lower() for stop in _ALL_STOPWORDS):
+            # Clean up remaining punctuation
+            simple_term = simple_term.strip('.,;:"\'\s')
+            if simple_term and len(simple_term) > 1:
+                return [(simple_term, "token")]
 
     return targets
 
@@ -90,4 +110,50 @@ def find_custom_target_instances(words, lines, page, img_w, img_h, term, mode, c
                     "display_label": f'"{term}"', "category": "custom",
                     "value": term, "page": page, "bbox": bbox,
                 })
+    return instances
+
+
+def find_custom_label_value_instances(words, lines, page, img_w, img_h, label, value, counter):
+    """
+    Finds instances where a label appears on the same or adjacent line
+    as its corresponding value, and masks the value (or the line).
+    Useful for patterns like "Product Code: ABC123" or "Product: XYZ"
+    """
+    if not label or not value:
+        return []
+    
+    label_words = [w.strip(",.:;()").lower() for w in label.split() if w.strip()]
+    value_words = [w.strip(",.:;()").lower() for w in value.split() if w.strip()]
+    
+    if not label_words or not value_words:
+        return []
+    
+    instances = []
+    tokens = [w["text"].strip(",.:;()").lower() for w in words]
+    label_n = len(label_words)
+    value_n = len(value_words)
+    
+    # Search for label and value on the same line or nearby
+    for label_i in range(len(tokens) - label_n + 1):
+        if tokens[label_i:label_i + label_n] == label_words:
+            # Found the label, now search for the value
+            # Try same line first
+            for value_i in range(len(tokens) - value_n + 1):
+                if tokens[value_i:value_i + value_n] == value_words:
+                    # Check if they're on the same line
+                    if words[label_i]["line_key"] == words[value_i]["line_key"]:
+                        idxs = list(range(value_i, value_i + value_n))
+                        bbox = words_bbox(words, idxs, img_w, img_h)
+                        if bbox:
+                            instances.append({
+                                "id": counter.next(),
+                                "field_type": f"custom:{label.lower()}",
+                                "display_label": f'{label}: [masked]',
+                                "category": "custom",
+                                "value": value,
+                                "page": page,
+                                "bbox": bbox,
+                            })
+                        break
+    
     return instances
