@@ -1,12 +1,17 @@
-import base64, json, os, re, urllib.request
+import base64
+import json
+import os
+import re
+import urllib.request
+import urllib.error
 from io import BytesIO
 
 from .ocr import words_bbox
 
 SYSTEM_PROMPT = (
     "You are a document field extractor. Find only clearly visible PII or financial fields. "
-    "Return strict JSON as an array of objects with keys: field_type, value, bbox, label. "
-    "bbox must be [x, y, width, height] in pixel coordinates. "
+    "Return strict JSON as an array of objects with keys: field_type, value, bbox, label.\n"
+    "bbox must be normalized box coordinates on a 0-1000 scale in format: [ymin, xmin, ymax, xmax].\n"
     "Use field_type values: email, phone, person_name, date, account_number, routing_number, id_number."
 )
 
@@ -19,6 +24,7 @@ FIELD_LABELS = {
     "routing_number": "Routing Number",
     "id_number": "ID Number",
 }
+
 FIELD_CATEGORIES = {
     "email": "contact",
     "phone": "contact",
@@ -30,26 +36,47 @@ FIELD_CATEGORIES = {
 }
 
 
-def _call_gemini(image, prompt):
+def _call_gemini_pdf_bytes(pdf_bytes, prompt):
+    """Passes raw PDF bytes directly to Gemini 2.5 Flash."""
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         return None
-    buf = BytesIO()
-    image.save(buf, format="JPEG", quality=92)
+
+    # Base64 encode raw PDF bytes directly (max 20MB inline)
+    pdf_b64 = base64.b64encode(pdf_bytes).decode("ascii")
+
     payload = {
-        "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "application/pdf", "data": base64.b64encode(buf.getvalue()).decode("ascii")}}]}],
-        "generationConfig": {"temperature": 0.0},
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": "application/pdf",  # ✅ Valid when passing actual raw PDF bytes
+                            "data": pdf_b64
+                        }
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.0,
+            "responseMimeType": "application/json"
+        },
     }
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+
     req = urllib.request.Request(
-        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
+        url,
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+
     with urllib.request.urlopen(req, timeout=30) as resp:
         body = json.load(resp)
-    text = body.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-    return text.strip() if isinstance(text, str) else None
+        return body.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
 
 
 def _parse_json(text):
@@ -85,24 +112,49 @@ def detect_gemini_fields(image, words, lines, page, img_w, img_h, counter):
         items = _parse_json(text)
     except Exception:
         return []
+        
     out = []
     for item in items or []:
         if not isinstance(item, dict):
             continue
+            
         field_type = str(item.get("field_type") or "").strip().lower().replace(" ", "_")
         value = str(item.get("value") or "").strip()
         if not value:
             continue
+            
         bbox = item.get("bbox") or [0, 0, 0, 0]
         if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
             continue
-        x, y, w, h = [float(v) for v in bbox]
-        left, top, right, bottom = int(max(0, x)), int(max(0, y)), int(max(0, x + w)), int(max(0, y + h))
+
+        # Convert normalized 0-1000 scale [ymin, xmin, ymax, xmax] to pixel [x, y, w, h]
+        ymin, xmin, ymax, xmax = [float(v) for v in bbox]
+        
+        # Scale back to original image dimensions
+        px_x = (xmin / 1000.0) * img_w
+        px_y = (ymin / 1000.0) * img_h
+        px_w = ((xmax - xmin) / 1000.0) * img_w
+        px_h = ((ymax - ymin) / 1000.0) * img_h
+
+        left, top, right, bottom = int(max(0, px_x)), int(max(0, px_y)), int(max(0, px_x + px_w)), int(max(0, px_y + px_h))
+
+        # Perform exact word-boundary refinement using OCR words
         if right <= left or bottom <= top:
-            left, top, right, bottom = _bbox_from_words(words, value, (left, top, right, bottom), img_w, img_h)
+            left, top, right, bottom = _bbox_from_words(words, value, (left, top, img_w, img_h), img_w, img_h)
         else:
             left, top, right, bottom = _bbox_from_words(words, value, (left, top, right - left, bottom - top), img_w, img_h)
+
         label = str(item.get("label") or FIELD_LABELS.get(field_type, field_type.replace("_", " ").title()))
         category = FIELD_CATEGORIES.get(field_type, "generic")
-        out.append({"id": counter.next(), "field_type": field_type, "display_label": label, "category": category, "value": value, "page": page, "bbox": (left, top, right, bottom)})
+        
+        out.append({
+            "id": counter.next(),
+            "field_type": field_type,
+            "display_label": label,
+            "category": category,
+            "value": value,
+            "page": page,
+            "bbox": (left, top, right, bottom)
+        })
+        
     return out
