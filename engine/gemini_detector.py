@@ -31,6 +31,7 @@ Validation Rules:
 """
 
 FIELD_LABELS = {
+    # Existing fields
     "email": "Email Address",
     "phone": "Phone Number",
     "person_name": "Name",
@@ -38,9 +39,16 @@ FIELD_LABELS = {
     "account_number": "Account Number",
     "routing_number": "Routing Number",
     "id_number": "ID Number",
+    # New GCC Document fields
+    "nationality": "Nationality",
+    "sex": "Gender",
+    "occupation": "Occupation / Job Title",
+    "organization": "Sponsor / Employer / Company",
+    "location": "Place of Issue / Address / City",
 }
 
 FIELD_CATEGORIES = {
+    # Existing categories
     "email": "contact",
     "phone": "contact",
     "person_name": "identity",
@@ -48,7 +56,14 @@ FIELD_CATEGORIES = {
     "account_number": "financial",
     "routing_number": "financial",
     "id_number": "identity",
+    # New GCC Document categories
+    "nationality": "identity",
+    "sex": "identity",
+    "occupation": "employment",
+    "organization": "employment",
+    "location": "geographic",
 }
+
 
 
 def _call_gemini(image_or_bytes, prompt):
