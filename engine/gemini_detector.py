@@ -36,47 +36,61 @@ FIELD_CATEGORIES = {
 }
 
 
-def _call_gemini_pdf_bytes(pdf_bytes, prompt):
-    """Passes raw PDF bytes directly to Gemini 2.5 Flash."""
+def _call_gemini(image_or_bytes, prompt):
+    """Calls Gemini with either a page image or raw PDF bytes."""
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        return None
+        return ""
 
-    # Base64 encode raw PDF bytes directly (max 20MB inline)
-    pdf_b64 = base64.b64encode(pdf_bytes).decode("ascii")
+    try:
+        if hasattr(image_or_bytes, "save"):
+            buffer = BytesIO()
+            image_or_bytes.save(buffer, format="PNG")
+            data = base64.b64encode(buffer.getvalue()).decode("ascii")
+            mime_type = "image/png"
+        else:
+            data = base64.b64encode(image_or_bytes).decode("ascii")
+            mime_type = "application/pdf"
 
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt},
-                    {
-                        "inline_data": {
-                            "mime_type": "application/pdf",  # ✅ Valid when passing actual raw PDF bytes
-                            "data": pdf_b64
-                        }
-                    }
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.0,
-            "responseMimeType": "application/json"
-        },
-    }
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": data,
+                            }
+                        },
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.0,
+                "responseMimeType": "application/json",
+            },
+        }
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
 
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
 
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = json.load(resp)
-        return body.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.load(resp)
+            return body.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, json.JSONDecodeError, OSError):
+        return ""
+
+
+def _call_gemini_pdf_bytes(pdf_bytes, prompt):
+    """Backward-compatible wrapper for PDF byte input."""
+    return _call_gemini(pdf_bytes, prompt)
 
 
 def _parse_json(text):

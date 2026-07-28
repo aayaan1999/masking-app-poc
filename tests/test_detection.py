@@ -70,3 +70,11 @@ def test_gemini_detector_parses_json_and_converts_bbox(monkeypatch):
     assert instances[0]["field_type"] == "email"
     assert instances[0]["display_label"] == "Email Address"
     assert instances[0]["bbox"] == (10, 20, 90, 35)
+
+
+def test_gemini_pdf_bytes_wrapper_returns_empty_when_api_unavailable(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    result = gemini_detector._call_gemini_pdf_bytes(b"%PDF-1.4\n%test", "prompt")
+
+    assert result == ""
