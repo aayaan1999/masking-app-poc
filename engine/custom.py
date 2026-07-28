@@ -8,12 +8,38 @@ arbitrary names/terms that no fixed field or column covers.
 import re
 
 _ALL_STOPWORDS = {
-    "fields", "pii", "records", "data", "information", "details",
+    "fields", "pii", "records", "information", "details",
     "aadhaar", "aadhar", "pan", "kyc", "documents", "entries",
+}
+_REJECT_TERMS = {
+    "record", "records", "row", "rows", "entry", "entries",
+    "transaction", "transactions", "detail", "details", "statement", "statements",
+    "line", "lines", "item", "items", "document", "documents",
+    "field", "fields", "label", "labels", "value", "values",
 }
 _ROW_SCOPE_WORDS = re.compile(r'\b(?:full\s+row|full\s+rows|row|rows|line|lines|statement|statements|detail|details|record|transaction|entry)\b', re.I)
 _ACTION_WORDS = re.compile(r'\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b', re.I)
 _NAME_HINT_WORDS = ("name", "person", "customer", "employee")
+
+_LABEL_TERMS = {
+    "sex", "gender", "name", "full name", "date of birth", "dob",
+    "issue date", "expiry date", "expiry", "nationality", "passport number",
+    "id number", "emirates id", "civil id", "place of issue", "issuing authority",
+    "address", "employer", "sponsor", "company",
+}
+
+
+def _normalize_custom_target(term: str) -> str:
+    term = re.sub(r"\s+", " ", term.strip().lower())
+    term = re.sub(r"\bissue\s+dates\b", "issue date", term)
+    term = re.sub(r"\bexpiry\s+dates\b", "expiry date", term)
+    term = re.sub(r"\bbirth\s+dates\b", "birth date", term)
+    term = re.sub(r"\bdates\b", "date", term)
+    term = re.sub(r"\bdobs\b", "dob", term)
+    term = re.sub(r"\bpassport\s+nos?\b", "passport number", term)
+    term = re.sub(r"\bnational\s+id\b", "id number", term)
+    term = re.sub(r"\bcivil\s+id\b", "civil id", term)
+    return term.strip()
 
 
 def extract_custom_targets(text: str):
@@ -29,15 +55,21 @@ def extract_custom_targets(text: str):
         term = term.strip().strip('.,;:"\\\' ')
         if not term:
             return
-        term = re.sub(r"\s+", " ", term).strip()
-        if term.lower() in _ALL_STOPWORDS:
+        normalized = _normalize_custom_target(term)
+        if not normalized:
             return
-        if re.fullmatch(r"(?:the\s+)?(?:name|person|customer|employee|record|records|row|rows|entry|entries|address|passport|id|date|dob|issue|expiry|number|code|value|company|organization|vendor|business|field|label|document|item|line|statement|transaction|transactions|description|full|all)(?:\s+.*)?", term, re.I):
+        term = term.strip().strip('.,;:"\' ')
+        term = re.sub(r"\s+", " ", term).strip()
+        if normalized in _LABEL_TERMS:
+            term = normalized
+        if term.lower() in _ALL_STOPWORDS:
             return
         if re.fullmatch(r"(?:mask|redact|hide|remove|blackout|delete|censor|scrub|all)\b.*", term, re.I):
             return
-        if term.lower() not in seen_terms:
-            seen_terms.add(term.lower())
+        if normalized in _REJECT_TERMS and normalized not in _LABEL_TERMS:
+            return
+        if normalized not in seen_terms:
+            seen_terms.add(normalized)
             targets.append((term, mode))
 
     for pat in (re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'")):
@@ -58,11 +90,13 @@ def extract_custom_targets(text: str):
             add_target(quoted_match.group(1) or quoted_match.group(2), scope)
             continue
 
-        fragment = re.sub(r"^\s*(?:the\s+)?(?:name|person|customer|employee)\s+", "", fragment, flags=re.I)
+        if not re.match(r"^\s*(?:issue|expiry|birth)\s+dates\b", fragment, re.I):
+            fragment = re.sub(r"^\s*(?:the\s+)?(?:name|person|customer|employee|sex|gender|passport|id|dob|date|issue|expiry)\s+", "", fragment, flags=re.I)
         fragment = re.sub(r"^\s*(?:all|full|the)\s+", "", fragment, flags=re.I)
         fragment = re.sub(r"^\s*(?:record|records|row|rows|entry|entries|transaction|transactions|detail|details|statement|line|item|document|description)\s+", "", fragment, flags=re.I)
         fragment = re.sub(r"^\s*(?:for|of|called|named|is)\s+", "", fragment, flags=re.I)
         fragment = re.sub(r"\s+(?:everywhere|throughout|in the document|from the document|on the page|now|please|thanks).*$", "", fragment, flags=re.I)
+        fragment = re.sub(r"\b(field|fields|value|values)\b\s*$", "", fragment, flags=re.I)
         fragment = re.split(r"[.,;:]", fragment, maxsplit=1)[0].strip().strip('.,;:"\\\' ')
         if fragment and not re.fullmatch(r"(?:the|all|full|row|rows|record|records|entry|entries|transaction|transactions|detail|details|statement|line|item|document|description)", fragment, re.I):
             add_target(fragment, scope)
@@ -78,6 +112,63 @@ def extract_custom_targets(text: str):
     return sorted(targets, key=lambda item: text.lower().find(item[0].lower()))
 
 
+def _normalize_label_term(term: str) -> str:
+    term = re.sub(r"\s+", " ", term.strip().lower())
+    term = re.sub(r"\bdates\b", "date", term)
+    term = re.sub(r"\bnos?\b", "number", term)
+    term = re.sub(r"\b(expiry|expiration)\b", "expiry", term)
+    return term
+
+
+def _is_label_term(term: str) -> bool:
+    return _normalize_label_term(term).lower() in _LABEL_TERMS
+
+
+def _find_label_value_instances(words, lines, page, img_w, img_h, label, counter):
+    from .ocr import words_bbox
+
+    label = _normalize_label_term(label)
+    label_words = [w.strip(".,:;()\"'/?").lower() for w in label.split() if w.strip()]
+    if not label_words:
+        return []
+
+    terminators = {
+        "field", "fields", "label", "labels", "document", "documents",
+        "line", "lines", "record", "records", "entry", "entries",
+        "transaction", "transactions", "detail", "details", "statement",
+        "statements",
+    }
+    separators = {":", "-", "|", "/"}
+
+    for line_idx, line in enumerate(lines):
+        word_idxs = line["word_idxs"]
+        tokens = [words[i]["text"].strip(".,:;()\"'/?").lower() for i in word_idxs]
+        for i in range(len(tokens) - len(label_words) + 1):
+            if tokens[i:i + len(label_words)] == label_words:
+                value_idxs = []
+                j = i + len(label_words)
+                while j < len(tokens) and tokens[j] in separators:
+                    j += 1
+                while j < len(tokens) and tokens[j] not in terminators:
+                    value_idxs.append(word_idxs[j])
+                    j += 1
+                if not value_idxs and line_idx + 1 < len(lines):
+                    value_idxs = lines[line_idx + 1]["word_idxs"]
+                if value_idxs:
+                    bbox = words_bbox(words, value_idxs, img_w, img_h)
+                    instances = [{
+                        "id": counter.next(),
+                        "field_type": f"custom:{label}",
+                        "display_label": f'"{label}"',
+                        "category": "custom",
+                        "value": " ".join(words[k]["text"] for k in value_idxs),
+                        "page": page,
+                        "bbox": bbox,
+                    }]
+                    return instances
+    return []
+
+
 def _line_bbox(words, lines, word_idx, img_w, img_h):
     from .ocr import words_bbox
 
@@ -90,6 +181,11 @@ def _line_bbox(words, lines, word_idx, img_w, img_h):
 
 def find_custom_target_instances(words, lines, page, img_w, img_h, term, mode, counter):
     from .ocr import words_bbox
+
+    if _is_label_term(term):
+        label_instances = _find_label_value_instances(words, lines, page, img_w, img_h, term, counter)
+        if label_instances:
+            return label_instances
 
     term_words = [w.strip(",.:;()").lower() for w in term.split() if w.strip()]
     if not term_words:
