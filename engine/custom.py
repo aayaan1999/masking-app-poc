@@ -6,7 +6,6 @@ arbitrary names/terms that no fixed field or column covers.
 """
 
 import re
-from .ocr import words_bbox
 
 _ALL_STOPWORDS = {
     "fields", "pii", "records", "data", "information", "details",
@@ -31,45 +30,57 @@ def extract_custom_targets(text: str):
             term = m.group(1).strip()
             if term:
                 targets.append((term, scope))
-    if targets:
-        return targets
 
     # 2. Look for possessive + concept: "John's record"
-    m = re.search(
-        r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\'s\s+"
-        r"(record|transaction|entr|detail|data|statement)", text)
-    if m:
-        return [(m.group(1), "row")]
+    for m in re.finditer(
+        r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\'s\s+(record|transaction|entr|detail|data|statement)",
+        text):
+        targets.append((m.group(1), "row"))
 
     # 3. Look for "record[s]? of/for [Name]"
-    m = re.search(
+    for m in re.finditer(
         r'(?:record[s]?|transaction[s]?|entries)\s+(?:of|for)\s+'
-        r'([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)', text)
-    if m:
-        return [(m.group(1), "row")]
+        r'([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)', text):
+        targets.append((m.group(1), "row"))
 
-    # 4. Look for mask/redact commands with names or values
-    for pattern in (
-        re.compile(r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b\s+(?:the\s+)?(?:name\s+)?(?:of\s+)?([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)", re.I),
-        re.compile(r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)", re.I),
-    ):
-        m = pattern.search(text)
-        if m:
-            term = m.group(1).strip()
-            if term and term.lower() not in _ALL_STOPWORDS:
-                return [(term, scope)]
+    # 4. Look for mask/redact commands with names or values.
+    command_patterns = (
+        re.compile(
+            r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b\s+"
+            r"(?:the\s+)?(?:name\s+|person\s+|customer\s+|employee\s+|record\s+|row\s+|entry\s+|address\s+|passport\s+|id\s+|date\s+|dob\s+|issue\s+|expiry\s+|number\s+|code\s+|value\s+|company\s+|organization\s+|vendor\s+|business\s+|field\s+|label\s+|document\s+|item\s+|line\s+|statement\s+|transactions?\s+)?"
+            r"(?:of\s+|for\s+|called\s+|is\s+|named\s+)?"
+            r"(?:\"([^\"]+)\"|'([^']+)'|([A-Za-z0-9][A-Za-z0-9\s\-\/&]+?))"
+            r"(?=$|\s+(?:everywhere|throughout|in the document|from the document|on the page|now|please|thanks)|[.,])",
+            re.I),
+        re.compile(
+            r"\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub)\b\s+"
+            r"(?:\"([^\"]+)\"|'([^']+)'|([A-Za-z0-9][A-Za-z0-9\s\-\/&]+?))"
+            r"(?=$|\s+(?:everywhere|throughout|in the document|from the document|on the page|now|please|thanks)|[.,])",
+            re.I),
+    )
+    for pattern in command_patterns:
+        for m in pattern.finditer(text):
+            term = next((group for group in m.groups() if group), None)
+            if term:
+                term = term.strip().strip('.,;:"\\\' ')
+                if term and term.lower() not in _ALL_STOPWORDS:
+                    targets.append((term, scope))
 
     # 5. Look for "all [Word]"
-    m = re.search(r'\ball\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})\b', text)
-    if m and m.group(1).lower() not in _ALL_STOPWORDS:
-        return [(m.group(1), scope)]
+    for m in re.finditer(r'\ball\s+([A-Za-z0-9][A-Za-z0-9\s\-\/&]{0,120}?)\b', text, re.I):
+        term = m.group(1).strip()
+        if term.lower() not in _ALL_STOPWORDS:
+            targets.append((term, scope))
+
+    if targets:
+        return targets
 
     # 6. Fallback: strip action words and use remaining phrase
     simple_term = text.strip()
     if simple_term and len(simple_term) > 2:
         simple_term = re.sub(r'\b(?:mask|redact|hide|remove|blackout|delete|censor|scrub|all)\b\s*', '', simple_term, flags=re.I).strip()
         if simple_term and not any(stop in simple_term.lower() for stop in _ALL_STOPWORDS):
-            simple_term = simple_term.strip('.,;:"\'\s')
+            simple_term = simple_term.strip('.,;:"\\\' ')
             if simple_term and len(simple_term) > 1:
                 return [(simple_term, "token")]
 
@@ -77,6 +88,8 @@ def extract_custom_targets(text: str):
 
 
 def _line_bbox(words, lines, word_idx, img_w, img_h):
+    from .ocr import words_bbox
+
     key = words[word_idx]["line_key"]
     for line in lines:
         if line["key"] == key:
@@ -85,6 +98,8 @@ def _line_bbox(words, lines, word_idx, img_w, img_h):
 
 
 def find_custom_target_instances(words, lines, page, img_w, img_h, term, mode, counter):
+    from .ocr import words_bbox
+
     term_words = [w.strip(",.:;()").lower() for w in term.split() if w.strip()]
     if not term_words:
         return []
@@ -114,6 +129,8 @@ def find_custom_label_value_instances(words, lines, page, img_w, img_h, label, v
     as its corresponding value, and masks the value (or the line).
     Useful for patterns like "Product Code: ABC123" or "Product: XYZ"
     """
+    from .ocr import words_bbox
+
     if not label or not value:
         return []
     
