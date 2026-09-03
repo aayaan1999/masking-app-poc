@@ -7,6 +7,8 @@ arbitrary names/terms that no fixed field or column covers.
 
 import re
 
+from .detectors import _trim_value_at_next_label, _looks_like_inline_label
+
 _ALL_STOPWORDS = {
     "fields", "pii", "records", "information", "details",
     "aadhaar", "aadhar", "pan", "kyc", "documents", "entries",
@@ -120,10 +122,6 @@ def _normalize_label_term(term: str) -> str:
     return term
 
 
-def _is_label_term(term: str) -> bool:
-    return _normalize_label_term(term).lower() in _LABEL_TERMS
-
-
 def _find_label_value_instances(words, lines, page, img_w, img_h, label, counter):
     from .ocr import words_bbox
 
@@ -132,12 +130,13 @@ def _find_label_value_instances(words, lines, page, img_w, img_h, label, counter
     if not label_words:
         return []
 
-    terminators = {
-        "field", "fields", "label", "labels", "document", "documents",
-        "line", "lines", "record", "records", "entry", "entries",
-        "transaction", "transactions", "detail", "details", "statement",
-        "statements",
-    }
+    # A hard-coded terminator wordlist used to gate where the value ends —
+    # any word not in that small set (e.g. "Treating", "Physician") was
+    # swept into the value, so typing a label on a densely packed row
+    # (like "Age / Gender: 34 / Male  Treating Physician: Dr. ...") would
+    # mask the whole rest of the line instead of just "34 / Male". Reuses
+    # the same label-boundary heuristic the fixed-field detectors use, so
+    # both paths stop at the same place.
     separators = {":", "-", "|", "/"}
 
     for line_idx, line in enumerate(lines):
@@ -145,15 +144,25 @@ def _find_label_value_instances(words, lines, page, img_w, img_h, label, counter
         tokens = [words[i]["text"].strip(".,:;()\"'/?").lower() for i in word_idxs]
         for i in range(len(tokens) - len(label_words) + 1):
             if tokens[i:i + len(label_words)] == label_words:
-                value_idxs = []
                 j = i + len(label_words)
-                while j < len(tokens) and tokens[j] in separators:
+                while j < len(tokens) and (tokens[j] in separators or tokens[j] == ""):
                     j += 1
-                while j < len(tokens) and tokens[j] not in terminators:
-                    value_idxs.append(word_idxs[j])
-                    j += 1
+                # The typed term can match only part of a combined label
+                # printed as "X / Y:" (e.g. searching "age" against a
+                # printed "Age / Gender:"). If what immediately follows
+                # still looks like the rest of that same label — short,
+                # capitalized, itself ending in a colon — skip past it too
+                # instead of treating it as the start of the value.
+                for extra_len in (2, 1):
+                    end = j + extra_len - 1
+                    if end < len(tokens) and words[word_idxs[end]]["text"].rstrip().endswith(":"):
+                        phrase = " ".join(words[word_idxs[k]]["text"] for k in range(j, end + 1)).rstrip(":")
+                        if _looks_like_inline_label(phrase):
+                            j = end + 1
+                            break
+                value_idxs = _trim_value_at_next_label(words, list(word_idxs[j:]))
                 if not value_idxs and line_idx + 1 < len(lines):
-                    value_idxs = lines[line_idx + 1]["word_idxs"]
+                    value_idxs = _trim_value_at_next_label(words, list(lines[line_idx + 1]["word_idxs"]))
                 if value_idxs:
                     bbox = words_bbox(words, value_idxs, img_w, img_h)
                     instances = [{
@@ -182,10 +191,17 @@ def _line_bbox(words, lines, word_idx, img_w, img_h):
 def find_custom_target_instances(words, lines, page, img_w, img_h, term, mode, counter):
     from .ocr import words_bbox
 
-    if _is_label_term(term):
-        label_instances = _find_label_value_instances(words, lines, page, img_w, img_h, term, counter)
-        if label_instances:
-            return label_instances
+    # Try label->value matching for any typed term, not just the small
+    # fixed _LABEL_TERMS whitelist — that whitelist meant typing e.g.
+    # "age" or "patient id" (anything not on the list) skipped straight
+    # to literal-text search and masked the label word itself rather than
+    # its value, leaving the actual number/text fully visible. This is
+    # a no-op for a term that isn't actually printed as "<term>:" on the
+    # page (e.g. a person's name), so it safely falls through to the
+    # literal-token search below in that case.
+    label_instances = _find_label_value_instances(words, lines, page, img_w, img_h, term, counter)
+    if label_instances:
+        return label_instances
 
     term_words = [w.strip(",.:;()").lower() for w in term.split() if w.strip()]
     if not term_words:

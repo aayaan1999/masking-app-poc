@@ -165,6 +165,79 @@ def _label_is_probable(label_text):
     return False
 
 
+# Short capitalized words that are almost always *values* (a gender,
+# title, marital status, ...) rather than the start of a field label —
+# without this, a capitalized value sitting right before an unrelated
+# later label ("... Male Treating Physician:") looks indistinguishable
+# from a two-word label ("Male Treating") under pure capitalization.
+_INLINE_VALUE_WORDS = {
+    "male", "female", "mr", "mrs", "ms", "miss", "dr", "married", "single",
+    "unmarried", "widowed", "divorced", "yes", "no", "na",
+}
+
+
+def _looks_like_inline_label(phrase):
+    """
+    True for a short, non-numeric, mostly-capitalized phrase — the shape
+    of a field label ("Treating Physician", "Reg No", "Patient ID") as
+    opposed to a value. Used only to find where a *second* label starts
+    partway through an OCR line, not to fully validate a label the way
+    _label_is_probable does.
+    """
+    phrase = phrase.strip(" .")
+    if not phrase:
+        return False
+    tokens = phrase.split()
+    if not (1 <= len(tokens) <= 4):
+        return False
+    if re.search(r'\d', phrase):
+        return False
+    if not all(re.match(r"^[A-Za-z][A-Za-z.'/]*$", t) for t in tokens):
+        return False
+    if tokens[0].strip(".").lower() in _INLINE_VALUE_WORDS:
+        return False
+    cap_count = sum(1 for t in tokens if t[:1].isupper())
+    return cap_count >= max(1, len(tokens) - 1)
+
+
+def _trim_value_at_next_label(words, idxs):
+    """
+    idxs: ordered (left-to-right) word indices making up a candidate
+    field value. Bank/ID/patient forms routinely pack several "Label:
+    value" pairs onto one printed row that OCR clusters into a single
+    line (e.g. "Age / Gender: 34 / Male  Treating Physician: Dr. S. K.
+    Verma (Reg No: 44582)"). Without this, a value span that isn't
+    explicitly bounded elsewhere runs to the end of that whole OCR line,
+    so redacting one field also redacts its unrelated neighbors on the
+    same row. This trims the span the moment a second label-shaped
+    phrase followed by a colon appears.
+    """
+    n = len(idxs)
+    for t in range(n):
+        tok = words[idxs[t]]["text"]
+        if not (tok.endswith(":") or tok == ":"):
+            continue
+        last_tok = tok.rstrip(":")
+        # Try the longest candidate label first (e.g. prefer "Treating
+        # Physician" over just "Physician") so the value gets cut before
+        # the label's own first word, not partway through it. Capped at 2
+        # words back (not the 4 _looks_like_inline_label otherwise
+        # allows): a real multi-word *value* — a first+last name being
+        # the most common case — is just as capitalized as a label, so
+        # searching further back risks eating the value's own trailing
+        # words (e.g. "...Smith Patient ID:" misreading "Smith Patient
+        # ID" as one 3-word label and truncating the surname).
+        for label_len in range(min(2, t), 0, -1):
+            start = t - label_len + 1
+            if start <= 0:
+                continue
+            raw = [words[idxs[i]]["text"] for i in range(start, t)]
+            phrase = " ".join(raw + ([last_tok] if last_tok else [])).strip()
+            if _looks_like_inline_label(phrase):
+                return idxs[:start]
+    return idxs
+
+
 def _extract_label_value_pair(words, line, next_line=None):
     line_text = _normalize_label_text(line["text"])
     if not line_text:
@@ -174,38 +247,57 @@ def _extract_label_value_pair(words, line, next_line=None):
     if m:
         label, value = m.group(1).strip(), m.group(2).strip()
         if _label_is_probable(label) and _looks_like_value(value):
-            return label, value, list(line["word_idxs"])
+            idxs = line["word_idxs"]
+            colon_pos = next((i for i, wi in enumerate(idxs) if ":" in words[wi]["text"]), None)
+            value_idxs = list(idxs[colon_pos + 1:]) if colon_pos is not None else list(idxs[len(label.split()):])
+            value_idxs = _trim_value_at_next_label(words, value_idxs)
+            if value_idxs:
+                value = " ".join(words[i]["text"] for i in value_idxs)
+                return label, value, value_idxs
+
+    def _next_line_value():
+        next_parts = [words[i]["text"].strip(" ,.:;()[]{}") for i in next_line["word_idxs"]]
+        next_parts = [p for p in next_parts if p]
+        if not next_parts:
+            return None
+        value_idxs = _trim_value_at_next_label(words, list(next_line["word_idxs"]))
+        if not value_idxs:
+            return None
+        value_text = " ".join(words[i]["text"] for i in value_idxs)
+        if _looks_like_value(value_text):
+            return value_text, value_idxs
+        return None
 
     parts = [words[i]["text"].strip(" ,.:;()[]{}") for i in line["word_idxs"]]
     parts = [p for p in parts if p]
     if len(parts) < 2:
-        if next_line is not None:
-            next_parts = [words[i]["text"].strip(" ,.:;()[]{}") for i in next_line["word_idxs"]]
-            next_parts = [p for p in next_parts if p]
-            if next_parts and _label_is_probable(line_text) and _looks_like_value(" ".join(next_parts)):
-                return line_text, " ".join(next_parts), list(next_line["word_idxs"])
+        if next_line is not None and _label_is_probable(line_text):
+            nv = _next_line_value()
+            if nv:
+                return line_text, nv[0], nv[1]
         return None
 
     if next_line is not None and _label_is_probable(line_text) and not re.search(r'\d', line_text) and not EMAIL_PATTERN.search(line_text) and not PHONE_PATTERN.search(line_text) and not DATE_PATTERN.search(line_text):
-        next_parts = [words[i]["text"].strip(" ,.:;()[]{}") for i in next_line["word_idxs"]]
-        next_parts = [p for p in next_parts if p]
-        if next_parts and _looks_like_value(" ".join(next_parts)):
-            return line_text, " ".join(next_parts), list(next_line["word_idxs"])
+        nv = _next_line_value()
+        if nv:
+            return line_text, nv[0], nv[1]
 
     for label_len in range(min(4, len(parts)), 0, -1):
         label = " ".join(parts[:label_len])
         value_parts = parts[label_len:]
         if not value_parts:
             continue
-        value_text = " ".join(value_parts)
+        value_idxs = _trim_value_at_next_label(words, list(line["word_idxs"][label_len:]))
+        if not value_idxs:
+            continue
+        value_text = " ".join(words[i]["text"] for i in value_idxs)
         if _label_is_probable(label) and _looks_like_value(value_text):
-            return label, value_text, list(line["word_idxs"][label_len:])
+            return label, value_text, value_idxs
 
-    if next_line is not None:
-        next_parts = [words[i]["text"].strip(" ,.:;()[]{}") for i in next_line["word_idxs"]]
-        next_parts = [p for p in next_parts if p]
-        if next_parts and _label_is_probable(line_text) and _looks_like_value(" ".join(next_parts)):
-            return line_text, " ".join(next_parts), list(next_line["word_idxs"])
+    if next_line is not None and _label_is_probable(line_text):
+        nv = _next_line_value()
+        if nv:
+            return line_text, nv[0], nv[1]
     return None
 
 
@@ -407,7 +499,7 @@ def detect_address(words, lines, page, img_w, img_h, counter):
             continue
         if li in claimed_lines:
             continue
-        idxs = list(line["word_idxs"])
+        idxs = _trim_value_at_next_label(words, list(line["word_idxs"]))
         claimed_lines.add(li)
 
         if li + 1 < len(lines):
@@ -415,7 +507,7 @@ def detect_address(words, lines, page, img_w, img_h, counter):
             gap = nxt["top"] - line["bottom"]
             avg_h = max(1, line["bottom"] - line["top"])
             if gap < avg_h * 1.5 and not _LABEL_LINE.match(nxt["text"]):
-                idxs += list(nxt["word_idxs"])
+                idxs += _trim_value_at_next_label(words, list(nxt["word_idxs"]))
                 claimed_lines.add(li + 1)
 
         val = " ".join(words[j]["text"] for j in idxs)[:80]
@@ -458,11 +550,30 @@ def detect_name(words, lines, page, img_w, img_h, counter):
                 continue
             value_idxs = list(value_idxs)
         else:
-            label_idxs = {i for i in line["word_idxs"]
-                          if i18n_labels.contains_any_keyword(words[i]["text"], NAME_KEYWORDS)}
-            value_idxs = [i for i in line["word_idxs"]
-                          if i not in label_idxs and words[i]["text"].strip(" /-:|") != ""]
+            # Bound the value to the contiguous run of words next to the
+            # name's own label — not every non-label word anywhere on the
+            # line. A row that packs multiple fields together (e.g.
+            # "Patient Name: John Smith  Patient ID: 12345") was
+            # previously treated as one giant name value covering the
+            # unrelated field too, since only the exact label token(s)
+            # were excluded and everything else on the line was kept.
+            idxs_line = line["word_idxs"]
+            label_positions = [pos for pos, i in enumerate(idxs_line)
+                                if i18n_labels.contains_any_keyword(words[i]["text"], NAME_KEYWORDS)]
             claimed_lines.add(li)
+            if not label_positions:
+                continue
+            first_label_pos, last_label_pos = label_positions[0], label_positions[-1]
+
+            after = [idxs_line[p] for p in range(last_label_pos + 1, len(idxs_line))
+                     if words[idxs_line[p]]["text"].strip(" /-:|") != ""]
+            after = _trim_value_at_next_label(words, after)
+            if after:
+                value_idxs = after
+            else:
+                # RTL layout — the value sits before the label instead.
+                value_idxs = [idxs_line[p] for p in range(0, first_label_pos)
+                               if words[idxs_line[p]]["text"].strip(" /-:|") != ""]
 
             if li + 1 < len(lines):
                 # Value continues on the next row — either because this
