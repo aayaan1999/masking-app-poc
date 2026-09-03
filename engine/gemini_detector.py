@@ -31,10 +31,14 @@ If you return a single object, wrap it as an array under a key such as "fields" 
 
 Each object must contain these exact keys:
 - "field_type": String. Use one of: "email", "phone", "person_name", "date_of_birth", "issue_date", "expiry_date", "date", "account_number", "routing_number", "id_number", "nationality", "sex", "occupation", "organization", "location", "issuing_authority", "place_of_issue".
-- "value": String. The exact visible text for the field.
-- "bbox": Array of four integers [x, y, width, height] in pixel coordinates relative to the page image.
-- "label": String or null. The nearest contextual label or header text.
+- "value": String. The exact visible text of just the field's value — never include the printed label itself in this string, and never include a second, different field's text that happens to sit on the same row or nearby line.
+- "bbox": Array of four integers [x, y, width, height] in pixel coordinates relative to the page image, tightly bounding only the value text above — not the label, and not any neighboring field.
+- "label": String or null. The field name exactly as it is printed on the document (preserve the document's own wording/casing, e.g. "Blood Group", "Reg No", "Marital Status", "S/O") — not a generic paraphrase or a category name you invent. Use null only when the value genuinely has no printed label at all (e.g. a name mentioned mid-sentence in free-flowing text).
 - "page_number": Integer. The 1-indexed page number where the field appears.
+
+Analyze each field's own printed label carefully before choosing field_type — field_type only needs to fit the closest matching category from the list above (for internal grouping), but "label" must always reflect the field's real, specific name as printed, even when several fields share one field_type. For example, "Blood Group" and "Marital Status" both fall outside every field_type on the list, so use whichever listed field_type is the closest reasonable fit (or omit the object if none fit at all and it isn't a recognizable identification/demographic/financial field) — but their "label" values must still read "Blood Group" and "Marital Status" respectively, not a generic term.
+
+Report each distinct physical field exactly once. If a row or line packs more than one labelled field close together (e.g. "Age / Gender: 34 / Male   Treating Physician: Dr. ..."), extract each as its own separate object with its own label, value, and tightly-bounded bbox — do not combine them into one object, and do not report the same field twice under two different field_types or labels.
 
 A document commonly has more than one date on it — do not lump them
 together. Classify every date by what it actually represents:
