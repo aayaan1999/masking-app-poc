@@ -9,6 +9,7 @@ import urllib.error
 from io import BytesIO
 
 from .ocr import words_bbox
+from .detectors import DATE_CONCEPT_LABELS
 
 # Verified live against the project's actual API key (see chat/session
 # notes) as of 2026-09: "gemini-3.6-flash" is the model Google's own API
@@ -29,11 +30,21 @@ Return your response strictly as JSON. Do not include markdown fences, explanato
 If you return a single object, wrap it as an array under a key such as "fields" or "data". The final result must be a JSON array of objects.
 
 Each object must contain these exact keys:
-- "field_type": String. Use one of: "email", "phone", "person_name", "date", "account_number", "routing_number", "id_number", "nationality", "sex", "occupation", "organization", "location", "issue_date", "expiry_date", "issuing_authority", "place_of_issue".
+- "field_type": String. Use one of: "email", "phone", "person_name", "date_of_birth", "issue_date", "expiry_date", "date", "account_number", "routing_number", "id_number", "nationality", "sex", "occupation", "organization", "location", "issuing_authority", "place_of_issue".
 - "value": String. The exact visible text for the field.
 - "bbox": Array of four integers [x, y, width, height] in pixel coordinates relative to the page image.
 - "label": String or null. The nearest contextual label or header text.
 - "page_number": Integer. The 1-indexed page number where the field appears.
+
+A document commonly has more than one date on it — do not lump them
+together. Classify every date by what it actually represents:
+- "date_of_birth" for a birth date (DOB).
+- "issue_date" for when the document/card was issued.
+- "expiry_date" for when it expires/is valid until.
+- "date" ONLY for a date that is none of the above (e.g. a transaction
+  or statement date) — never use "date" for a birth, issue, or expiry
+  date just because its label is ambiguous; use the surrounding context
+  (nearby labels, document type) to decide which of the three it is.
 
 For GCC identity documents, include fields such as ID Number, Name, Date of Birth, Nationality, Sex, Occupation, Employer, Place of Issue, Issuing Authority, Issue Date, and Expiry Date when they are visible.
 
@@ -55,10 +66,13 @@ FIELD_LABELS = {
     "occupation": "Occupation / Job Title",
     "organization": "Sponsor / Employer / Company",
     "location": "Place of Issue / Address / City",
-    "issue_date": "Issue Date",
-    "expiry_date": "Expiry Date",
     "issuing_authority": "Issuing Authority",
     "place_of_issue": "Place of Issue",
+    # Reuse the regex detector's own field_type names/labels for
+    # dob/date_of_issue/date_of_expiry (see _normalize_field_type) so a
+    # date found by both detectors is recognized as the same field
+    # instead of showing up as two separately-labeled groups.
+    **DATE_CONCEPT_LABELS,
 }
 
 FIELD_CATEGORIES = {
@@ -76,10 +90,11 @@ FIELD_CATEGORIES = {
     "occupation": "employment",
     "organization": "employment",
     "location": "geographic",
-    "issue_date": "identity",
-    "expiry_date": "identity",
     "issuing_authority": "employment",
     "place_of_issue": "geographic",
+    "dob": "identity",
+    "date_of_issue": "identity",
+    "date_of_expiry": "identity",
 }
 
 
@@ -218,12 +233,20 @@ def _normalize_field_type(field_type):
         "name": "person_name",
         "full_name": "person_name",
         "customer_name": "person_name",
-        "dob": "date",
-        "date_of_birth": "date",
-        "birth_date": "date",
-        "expiry_date": "expiry_date",
-        "issue_date": "issue_date",
-        "issued_at": "issue_date",
+        # Match the regex detector's field_type names (dob /
+        # date_of_issue / date_of_expiry — see detectors.py
+        # DATE_CONCEPT_LABELS) rather than Gemini's own vocabulary, so a
+        # date found by both detectors merges into one group instead of
+        # showing up twice under different names.
+        "dob": "dob",
+        "date_of_birth": "dob",
+        "birth_date": "dob",
+        "expiry_date": "date_of_expiry",
+        "expiration_date": "date_of_expiry",
+        "date_of_expiry": "date_of_expiry",
+        "issue_date": "date_of_issue",
+        "issued_at": "date_of_issue",
+        "date_of_issue": "date_of_issue",
         "email_address": "email",
         "phone_number": "phone",
         "mobile_number": "phone",

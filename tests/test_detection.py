@@ -138,9 +138,17 @@ def test_gemini_detector_normalizes_gcc_fields(monkeypatch):
         Image.new("RGB", (100, 100)), words, lines, 0, 100, 100, detectors.InstanceCounter(),
     )
 
-    assert {inst["field_type"] for inst in instances} == {"issue_date", "expiry_date", "nationality"}
+    # field_type is normalized to match the regex detector's own naming
+    # (date_of_issue/date_of_expiry, not Gemini's issue_date/expiry_date)
+    # so the same physical date found by either detector merges into one
+    # group instead of showing up twice under two different names.
+    assert {inst["field_type"] for inst in instances} == {"date_of_issue", "date_of_expiry", "nationality"}
+    # The first item supplies its own "label" (used verbatim); the second
+    # has none, so it falls back to the shared DATE_CONCEPT_LABELS text
+    # ("Date of Expiry") that the regex detector also uses for this
+    # field_type, rather than a separately-drifting "Expiry Date" string.
     assert any(inst["display_label"] == "Issue Date" and inst["value"] == "01-01-2025" for inst in instances)
-    assert any(inst["display_label"] == "Expiry Date" and inst["value"] == "01-01-2030" for inst in instances)
+    assert any(inst["display_label"] == "Date of Expiry" and inst["value"] == "01-01-2030" for inst in instances)
     assert any(inst["display_label"] == "Nationality" and inst["value"] == "UAE" for inst in instances)
 
 
