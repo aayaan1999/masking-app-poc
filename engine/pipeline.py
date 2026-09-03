@@ -108,12 +108,27 @@ def _merge_overlapping_instances(instances):
                         continue
                     if _overlap_ratio(current["bbox"], other["bbox"]) >= 0.3:
                         current["bbox"] = _union_bbox(current["bbox"], other["bbox"])
-                        if len(other["value"]) > len(current["value"]):
-                            current["value"] = other["value"]
+                        # value must travel together with whichever
+                        # instance's field_type/display_label wins — a
+                        # higher-priority instance's own value replaces
+                        # it outright, and a same-priority tie only
+                        # extends it when both instances agree on what
+                        # concept this even is. Extending "value" on raw
+                        # string length alone, independent of whether the
+                        # field identity changed, let an overlapping but
+                        # unrelated field's longer text overwrite a
+                        # correct short one (e.g. a phone_number's "value"
+                        # getting replaced by an overlapping address
+                        # instance's much longer text).
                         if _field_priority(other) > _field_priority(current):
                             current["field_type"] = other["field_type"]
                             current["display_label"] = other["display_label"]
                             current["category"] = other["category"]
+                            current["value"] = other["value"]
+                        elif (_field_priority(other) == _field_priority(current)
+                              and other["field_type"] == current["field_type"]
+                              and len(other["value"]) > len(current["value"])):
+                            current["value"] = other["value"]
                         used[j] = True
                         changed = True
             merged.append(current)
@@ -148,7 +163,8 @@ def extract_fields(pdf_path: str, use_ner: bool = True):
             words, lines, page_idx, img_w, img_h, counter, claimed)
         claimed |= gcc_claimed
 
-        table_instances = tables.detect_table_columns(words, lines, page_idx, img_w, img_h, counter)
+        table_instances, table_claimed = tables.detect_table_columns(words, lines, page_idx, img_w, img_h, counter)
+        claimed |= table_claimed
 
         # Any bare date match (DOB, issue, expiry, or unlabelled) is
         # ambiguous with a transaction/statement date — if it sits

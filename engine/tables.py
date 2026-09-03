@@ -61,31 +61,38 @@ def _column_anchor_x(words, line, col_key):
 
 def detect_table_columns(words, lines, page, img_w, img_h, counter):
     """
-    Finds a bank-statement-style table on the page and returns one
-    instance per detected cell, grouped by column. Returns [] if no
-    table header is found on this page (most ID-card documents won't
-    have one, so this is a no-op for them).
+    Finds a bank-statement-style table on the page and returns
+    (instances, claimed): one instance per detected cell, grouped by
+    column, and the set of word indices — header row included — that
+    belong to the table. Returns ([], set()) if no table header is found
+    on this page (most ID-card documents won't have one, so this is a
+    no-op for them).
+
+    The header row's own words (e.g. "Date Narration Debit Credit
+    Balance") were previously never marked claimed by anything, since
+    only data-row cells become instances — leaving the generic "any
+    Label: Value" detector free to independently (and wrongly) parse
+    that whole header row as if "Date" were a label and the rest of the
+    row its value. Returning it as claimed lets the pipeline exclude it
+    from downstream detectors the same way any other already-detected
+    text is excluded.
     """
     header = find_header_line(lines)
     if header is None:
-        return []
+        return [], set()
 
     cols_present = sorted(_match_columns(header["text"]),
                            key=lambda c: _column_anchor_x(words, header, c))
     if len(cols_present) < 2:
-        return []
+        return [], set()
 
     anchors = [(_column_anchor_x(words, header, c), c) for c in cols_present]
     anchors.sort()
-    # Column band = from this anchor's x to the next anchor's x (last band -> page edge)
-    bands = []
-    for i, (x, col) in enumerate(anchors):
-        x_end = anchors[i + 1][0] if i + 1 < len(anchors) else img_w
-        bands.append((x, x_end, col))
 
     body_lines = [l for l in lines if l["top"] > header["bottom"]]
     body_lines.sort(key=lambda l: l["top"])
 
+    claimed = set(header["word_idxs"])
     instances = []
     for line in body_lines:
         first_word_text = words[line["word_idxs"][0]]["text"]
@@ -96,17 +103,25 @@ def detect_table_columns(words, lines, page, img_w, img_h, counter):
         if not looks_like_row:
             continue
 
-        cell_words = {col: [] for _, _, col in bands}
+        # Assign each word to whichever column anchor its *center* sits
+        # closest to, rather than a strict left-edge band membership test.
+        # Numeric columns (Debit/Credit/Balance) are conventionally
+        # right-aligned, so a shorter value's left edge can land a few
+        # pixels short of its own column's header — "5000.00" sitting 1px
+        # left of the "Debit" header's anchor used to fall just outside
+        # the debit band and get silently misfiled under "Narration"
+        # instead, meaning a "mask this column" selection would miss it.
+        # Nearest-anchor-by-center has no such hard edge to fall short of.
+        cell_words = {col: [] for _, col in anchors}
         for idx in line["word_idxs"]:
-            wx = words[idx]["left"]
-            for x0, x1, col in bands:
-                if x0 - 15 <= wx < x1:
-                    cell_words[col].append(idx)
-                    break
+            wx = (words[idx]["left"] + words[idx]["right"]) / 2
+            _, col = min(anchors, key=lambda a: abs(a[0] - wx))
+            cell_words[col].append(idx)
 
         for col, idxs in cell_words.items():
             if not idxs:
                 continue
+            claimed.update(idxs)
             value = " ".join(words[i]["text"] for i in idxs)
             left = min(words[i]["left"] for i in idxs)
             top = min(words[i]["top"] for i in idxs)
@@ -122,4 +137,4 @@ def detect_table_columns(words, lines, page, img_w, img_h, counter):
                 "page": page,
                 "bbox": bbox,
             })
-    return instances
+    return instances, claimed

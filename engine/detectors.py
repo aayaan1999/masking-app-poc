@@ -45,10 +45,13 @@ _OWNED_LABEL_PATTERNS = re.compile(
 _LABEL_LINE = re.compile(r'^\s*([A-Za-z][A-Za-z .\'/]{1,40}?)\s*[:\-]\s*(.+)$')
 
 _KNOWN_LABEL_TOKENS = {
-    "name", "date", "birth", "dob", "account", "number", "phone", "mobile",
+    "name", "date", "birth", "dob", "account", "number", "no", "phone", "mobile",
     "email", "address", "passport", "policy", "customer", "employee",
     "license", "registration", "father", "mother", "national", "civil",
-    "emirates", "iqama", "pan", "aadhaar", "card", "id",    "gender", "sex",}
+    "emirates", "iqama", "pan", "aadhaar", "card", "id",    "gender", "sex",
+    "occupation", "employer", "nationality", "authority", "issue", "expiry",
+    "physician", "doctor", "blood", "group", "marital", "status", "reg",
+    "holder",}
 
 
 def _mk(field_type, display_label, category, value, page, bbox, iid):
@@ -164,6 +167,18 @@ def _label_is_probable(label_text):
         return False
     tokens = [t for t in re.split(r"\s+", label_text) if t]
     if len(tokens) > 1:
+        # A bare "-"/"–"/"—" token (dash used as a standalone word,
+        # surrounded by spaces on both sides) means this isn't one
+        # coherent label phrase but two unrelated pieces of text a
+        # document title/header happened to be joined by a separator
+        # character — e.g. "HDFC Bank - Account Statement" was otherwise
+        # treated as a 4-word label ending in the recognized word
+        # "account", turning an entire title line into a fake field.
+        # "/" is deliberately NOT included here — it's routinely part of
+        # a single genuine compound label ("Age / Gender", "S/o", "C/o"),
+        # not a title/subtitle joiner.
+        if any(t in ("-", "--", "–", "—") for t in tokens):
+            return False
         last_token = re.sub(r"[^a-z0-9]+", "", tokens[-1])
         if not (last_token in _KNOWN_LABEL_TOKENS or last_token.endswith(("name", "number", "address", "id"))):
             return False
@@ -224,6 +239,12 @@ def _trim_value_at_next_label(words, idxs):
     n = len(idxs)
     for t in range(n):
         tok = words[idxs[t]]["text"]
+        # A phone number or email is a strong, unambiguous signal that a
+        # different field's value starts here, even with no "Label:"
+        # anywhere nearby (e.g. a value span that swept up a trailing
+        # unrelated phone number because nothing else bounded it).
+        if t > 0 and (PHONE_PATTERN.search(tok) or EMAIL_PATTERN.search(tok)):
+            return idxs[:t]
         if not (tok.endswith(":") or tok == ":"):
             continue
         last_tok = tok.rstrip(":")
@@ -445,6 +466,9 @@ def reassociate_unlabelled_dates(instances, lines, words):
     return out
 
 
+_PHONE_SPLIT_FULL = re.compile(r'^(?:91)?[6-9]\d{9}$')
+
+
 def detect_phone(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     for i, w in enumerate(words):
@@ -452,7 +476,39 @@ def detect_phone(words, lines, page, img_w, img_h, counter):
             out.append(_mk("phone_number", "Phone Number", "contact", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
+
+    # Indian mobile numbers are routinely printed/OCR'd with an internal
+    # space ("+91 98765 43210" or "98765 43210") — PHONE_PATTERN only
+    # matches 10 contiguous digits, so a number split across 2-3 OCR
+    # words (by a genuine space, not by accident) was silently missed
+    # entirely rather than partially matched. This checks short adjacent
+    # same-line word spans for one that concatenates to exactly a
+    # phone-shaped 10 (or 91+10) digit string.
+    n = len(words)
+    for i in range(n):
+        if i in seen:
+            continue
+        for span_len in (3, 2):
+            j = i + span_len
+            if j > n or any(k in seen for k in range(i, j)):
+                continue
+            if len({words[k]["line_key"] for k in range(i, j)}) != 1:
+                continue
+            if any(words[k]["conf"] is not None and words[k]["conf"] < 35 for k in range(i, j)):
+                continue
+            digits = "".join(re.sub(r"\D", "", words[k]["text"]) for k in range(i, j))
+            if _PHONE_SPLIT_FULL.match(digits):
+                idxs = list(range(i, j))
+                val = " ".join(words[k]["text"] for k in idxs)
+                out.append(_mk("phone_number", "Phone Number", "contact", val,
+                                page, words_bbox(words, idxs, img_w, img_h), counter.next()))
+                seen.update(idxs)
+                break
     return out, seen
+
+
+_EMAIL_LOCAL_PART = re.compile(r'^[\w._%+-]+@$')
+_EMAIL_DOMAIN_PART = re.compile(r'^[\w-]+(?:\.[\w-]+)*\.\w{2,}[.,;:]?$')
 
 
 def detect_email(words, lines, page, img_w, img_h, counter):
@@ -462,18 +518,41 @@ def detect_email(words, lines, page, img_w, img_h, counter):
             out.append(_mk("email", "Email Address", "contact", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
+
+    # Tesseract routinely tokenizes right at the "@" (e.g. rendering/kerning
+    # around the symbol reads as whitespace), splitting one email into two
+    # OCR words — "name@" and "domain.com" — neither of which matches
+    # EMAIL_PATTERN alone, so the address went undetected entirely. Rejoin
+    # an adjacent same-line pair that looks like exactly that split.
+    for i in range(len(words) - 1):
+        if i in seen or (i + 1) in seen:
+            continue
+        a, b = words[i], words[i + 1]
+        if a["line_key"] != b["line_key"]:
+            continue
+        if _EMAIL_LOCAL_PART.match(a["text"]) and _EMAIL_DOMAIN_PART.match(b["text"]):
+            val = a["text"] + b["text"]
+            out.append(_mk("email", "Email Address", "contact", val,
+                            page, words_bbox(words, [i, i + 1], img_w, img_h), counter.next()))
+            seen.update([i, i + 1])
     return out, seen
 
 
 def detect_card_number(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     n = len(words)
+    # A bare 13-19 digit number is ambiguous with a bank account number
+    # (ACCOUNT_NO_PATTERN is 9-18 digits) — without this, "Account
+    # Number: 50100123456789" was also reported a second time as a
+    # "Card Number", a plainly wrong duplicate label for the same digits.
+    line_text_by_key = {l["key"]: l["text"] for l in lines}
     for i in range(n):
         if i in seen:
             continue
         w = words[i]
-        if CARD_FULL.match(w["text"]) and (w["conf"] is not None and w["conf"] > 15) and not (
-                len(w["text"]) == 15 and w["text"].startswith("784")):
+        if (CARD_FULL.match(w["text"]) and (w["conf"] is not None and w["conf"] > 15) and not (
+                len(w["text"]) == 15 and w["text"].startswith("784"))
+                and not _ACCOUNT_CONTEXT.search(line_text_by_key.get(w.get("line_key"), ""))):
             out.append(_mk("credit_card_number", "Card Number", "financial", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
@@ -495,28 +574,50 @@ def detect_card_number(words, lines, page, img_w, img_h, counter):
 
 def detect_address(words, lines, page, img_w, img_h, counter):
     """
-    Line-based: an address label pulls in the rest of its own printed
-    row, plus at most one following row if that row doesn't look like
-    the start of a *different* labelled field (so a 2-line address
-    wrapped without a repeated label is still fully covered, without
-    also sweeping up the next unrelated field).
+    Line-based: an address keyword pulls in the words adjacent to it on
+    its own printed row, plus at most one following row if that row
+    doesn't look like the start of a *different* labelled field (so a
+    2-line address wrapped without a repeated label is still fully
+    covered, without also sweeping up the next unrelated field).
+
+    Matches per-word (like detect_name), not by testing the whole line's
+    text for a keyword substring — a whole-line test meant a keyword
+    merely *mentioned* anywhere in an unrelated labelled line (e.g. "W/O"
+    inside "Emergency Contact: Sunita Iyer, W/O Ramesh Iyer, ...") made
+    this treat the entire row as one address value, label word included.
     """
     out, seen = [], set()
     claimed_lines = set()
     for li, line in enumerate(lines):
-        if not i18n_labels.contains_any_keyword(line["text"], ADDR_KEYWORDS):
-            continue
         if li in claimed_lines:
             continue
-        idxs = _trim_value_at_next_label(words, list(line["word_idxs"]))
+        idxs_line = line["word_idxs"]
+        label_positions = [pos for pos, i in enumerate(idxs_line)
+                            if i18n_labels.contains_any_keyword(words[i]["text"], ADDR_KEYWORDS)]
+        if not label_positions:
+            continue
         claimed_lines.add(li)
+        first_label_pos, last_label_pos = label_positions[0], label_positions[-1]
+
+        after = [idxs_line[p] for p in range(last_label_pos + 1, len(idxs_line))
+                 if words[idxs_line[p]]["text"].strip(" ,") != ""]
+        after = _trim_value_at_next_label(words, after)
+        if after:
+            idxs = after
+        else:
+            # RTL layout, or the keyword itself sits at the end of the
+            # row (e.g. "... W/O") — take the words before it instead.
+            idxs = [idxs_line[p] for p in range(0, first_label_pos)
+                    if words[idxs_line[p]]["text"].strip(" ,") != ""]
+            if not idxs:
+                continue
 
         if li + 1 < len(lines):
             nxt = lines[li + 1]
             gap = nxt["top"] - line["bottom"]
             avg_h = max(1, line["bottom"] - line["top"])
             if gap < avg_h * 1.5 and not _LABEL_LINE.match(nxt["text"]):
-                idxs += _trim_value_at_next_label(words, list(nxt["word_idxs"]))
+                idxs = idxs + _trim_value_at_next_label(words, list(nxt["word_idxs"]))
                 claimed_lines.add(li + 1)
 
         val = " ".join(words[j]["text"] for j in idxs)[:80]
@@ -634,22 +735,48 @@ def detect_generic_labels(words, lines, page, img_w, img_h, counter, already_cla
         confs = [words[i]["conf"] for i in line["word_idxs"] if words[i]["conf"] is not None and words[i]["conf"] >= 0]
         if confs and (sum(confs) / len(confs)) < 45:
             continue
-        pair = _extract_label_value_pair(words, line, lines[li + 1] if li + 1 < len(lines) else None)
-        if not pair:
-            continue
-        label, value, value_idxs = pair
-        if _OWNED_LABEL_PATTERNS.search(label) or len(value) < 2:
-            continue
-        if len(label) < 2 or label.lower() in {"note", "important", "instructions"}:
-            continue
-        bbox = words_bbox(words, value_idxs, img_w, img_h) if value_idxs else (
-            line["left"], line["top"], line["right"], line["bottom"]
-        )
-        display = " ".join(w.capitalize() for w in label.split())
-        out.append(_mk(
-            f"label:{label.lower()}", display, "generic", value, page,
-            bbox, counter.next(),
-        ))
+
+        # A single printed row often packs more than one "Label: value"
+        # pair ("Blood Group: O+  Marital Status: Married"). Only ever
+        # extracting the first pair from a line meant that once value
+        # trimming correctly started stopping *before* the next label
+        # (see _trim_value_at_next_label), whatever came after it was
+        # silently dropped instead of surfaced as its own field — so this
+        # keeps re-extracting from whatever's left on the row after each
+        # consumed label/value until nothing more is found.
+        current_line = line
+        for _ in range(6):
+            pair = _extract_label_value_pair(words, current_line, lines[li + 1] if li + 1 < len(lines) else None)
+            if not pair:
+                break
+            label, value, value_idxs = pair
+
+            if not (_OWNED_LABEL_PATTERNS.search(label) or len(value) < 2
+                    or len(label) < 2 or label.lower() in {"note", "important", "instructions"}):
+                bbox = words_bbox(words, value_idxs, img_w, img_h) if value_idxs else (
+                    line["left"], line["top"], line["right"], line["bottom"]
+                )
+                display = " ".join(w.capitalize() for w in label.split())
+                out.append(_mk(
+                    f"label:{label.lower()}", display, "generic", value, page,
+                    bbox, counter.next(),
+                ))
+
+            # Only continue scanning the same row if the consumed value
+            # actually came from it (not a wrapped value pulled in from
+            # the next line, which can't be sliced the same way).
+            if value_idxs and value_idxs[-1] in current_line["word_idxs"]:
+                last_pos = current_line["word_idxs"].index(value_idxs[-1])
+                rem_idxs = current_line["word_idxs"][last_pos + 1:]
+            else:
+                rem_idxs = []
+            if not rem_idxs:
+                break
+            current_line = {
+                **current_line,
+                "word_idxs": rem_idxs,
+                "text": " ".join(words[i]["text"] for i in rem_idxs),
+            }
     return out
 
 

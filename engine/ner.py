@@ -14,6 +14,7 @@ Install with:
 """
 
 from .ocr import words_bbox
+from .detectors import _KNOWN_LABEL_TOKENS
 
 _NLP = None
 _LOAD_ATTEMPTED = False
@@ -45,8 +46,16 @@ def ner_available() -> bool:
 
 
 def _find_span_word_idxs(words, line_word_idxs, span_text):
-    span_tokens = [t.lower() for t in span_text.split()]
+    # Strip the same punctuation from both sides before comparing — spaCy's
+    # entity text keeps periods on abbreviated tokens ("S.", "K.") while
+    # OCR word text has them stripped below, so a name like "S. K. Verma"
+    # (very common — initials, honorifics) never matched and fell through
+    # to the caller's whole-line fallback, which used to be silently wrong.
+    span_tokens = [t.strip(",.:;()").lower() for t in span_text.split()]
+    span_tokens = [t for t in span_tokens if t]
     n = len(span_tokens)
+    if n == 0:
+        return None
     line_tokens = [words[i]["text"].strip(",.:;()").lower() for i in line_word_idxs]
     for start in range(len(line_tokens) - n + 1):
         if line_tokens[start:start + n] == span_tokens:
@@ -86,8 +95,25 @@ def detect_entities(words, lines, page, img_w, img_h, counter, already_claimed):
             # always OCR noise fragments, not real names/orgs/places.
             if len(clean) < 3 or not any(c.isalpha() for c in clean):
                 continue
+            # A short capitalized field-label phrase — "Expiry Date",
+            # "Reg No" — routinely gets mis-tagged PERSON/ORG by a
+            # general-purpose NER model reading it out of context. If
+            # every token in the entity is itself a recognized label
+            # word, it's a field name, not really a free-text mention.
+            ent_tokens = [t.strip(".,:;()").lower() for t in clean.split()]
+            if ent_tokens and all(t in _KNOWN_LABEL_TOKENS for t in ent_tokens):
+                continue
             field_type, display_label, category = _LABEL_MAP[ent.label_]
-            idxs = _find_span_word_idxs(words, line["word_idxs"], ent.text) or line["word_idxs"]
+            idxs = _find_span_word_idxs(words, line["word_idxs"], ent.text)
+            if idxs is None:
+                # Couldn't map the entity's own text back to specific OCR
+                # words — falling back to the whole line here used to
+                # produce a bbox spanning the entire printed row, which
+                # could then swallow unrelated fields sharing that row
+                # once overlapping detections get merged downstream.
+                # Skipping the entity is safer than mis-boxing it that
+                # wide; the regex/label detectors still cover most PII.
+                continue
             bbox = words_bbox(words, idxs, img_w, img_h)
             instances.append({
                 "id": counter.next(), "field_type": field_type,
