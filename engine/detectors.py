@@ -9,6 +9,7 @@ them uniformly.
 """
 
 import re
+import threading
 from .ocr import words_bbox
 from . import i18n_labels
 
@@ -60,10 +61,18 @@ def _mk(field_type, display_label, category, value, page, bbox, iid):
 class InstanceCounter:
     def __init__(self):
         self.n = 0
+        self._lock = threading.Lock()
 
     def next(self):
-        self.n += 1
-        return f"i{self.n}"
+        # Gemini calls for different pages now run concurrently on their
+        # own threads (see pipeline.extract_fields), all sharing one
+        # counter — without the lock, two threads' unsynchronized
+        # increments could hand out the same id to two different
+        # instances, which breaks the frontend's assumption that
+        # instance ids are unique.
+        with self._lock:
+            self.n += 1
+            return f"i{self.n}"
 
 
 _ACCOUNT_CONTEXT = re.compile(r'account|a/c\b|acct', re.I)

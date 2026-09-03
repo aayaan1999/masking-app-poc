@@ -6,7 +6,9 @@ Ties the whole thing together:
   render_masked_pdf() page images + chosen instances -> masked PDF file
 """
 
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import ocr, detectors, tables, ner, custom, gcc_ids
 from .detectors import InstanceCounter
 from .gemini_detector import detect_gemini_fields
@@ -97,11 +99,13 @@ def extract_fields(pdf_path: str, use_ner: bool = True):
     counter = InstanceCounter()
     all_instances = []
     ocr_cache = []
+    page_ocr = []  # (words, lines, img_w, img_h) per page, for the Gemini pass below
 
     for page_idx, image in enumerate(page_images):
         img_w, img_h = image.size
         words, lines = ocr.ocr_page(image)
         ocr_cache.append((words, lines, img_w, img_h))
+        page_ocr.append((words, lines, img_w, img_h))
 
         known, claimed = detectors.run_known_detectors(words, lines, page_idx, img_w, img_h, counter)
         known = detectors.reassociate_unlabelled_dates(known, lines, words)
@@ -128,15 +132,28 @@ def extract_fields(pdf_path: str, use_ner: bool = True):
         all_instances += gcc_instances
         all_instances += table_instances
 
-        gemini_instances = detect_gemini_fields(image, words, lines, page_idx, img_w, img_h, counter)
-        all_instances += gemini_instances
-
         generic = detectors.detect_generic_labels(words, lines, page_idx, img_w, img_h, counter, claimed)
         all_instances += generic
 
         if use_ner:
             entity_instances = ner.detect_entities(words, lines, page_idx, img_w, img_h, counter, claimed)
             all_instances += entity_instances
+
+    # A Gemini call is dominated by network round-trip time, not CPU, so a
+    # multi-page document doesn't need to pay for each page's latency one
+    # after another — running them concurrently means a 3-page PDF takes
+    # roughly as long as its slowest single page instead of the sum of
+    # all three, which matters a lot on a host with tight request-time
+    # budgets. Skipped entirely (no thread pool spun up) when no API key
+    # is configured, since every call would be an instant no-op anyway.
+    if os.getenv("GOOGLE_API_KEY"):
+        with ThreadPoolExecutor(max_workers=min(4, len(page_images) or 1)) as pool:
+            futures = [
+                pool.submit(detect_gemini_fields, image, words, lines, page_idx, img_w, img_h, counter)
+                for page_idx, (image, (words, lines, img_w, img_h)) in enumerate(zip(page_images, page_ocr))
+            ]
+            for fut in as_completed(futures):
+                all_instances += fut.result()
 
     all_instances = _merge_overlapping_instances(all_instances)
     return page_images, all_instances, ocr_cache

@@ -103,15 +103,17 @@ def ocr_page(image):
     this line except the label" don't care about reading order and are
     unaffected; only human-facing preview text may read reversed.
     """
-    # Try every layout mode and keep the best-scoring result rather than
-    # the first non-empty one. PSM 4 (assume a single column of text) will
-    # often produce *some* garbled output even on a scattered ID-card
-    # layout, which used to make the loop stop right there and never try
-    # PSM 11 (sparse text) — the mode the rest of this module's docstring
-    # says is usually the right one for that layout. Scoring by mean
-    # confidence * word count picks whichever config actually read the
-    # page best instead of whichever ran first.
-    configs = ["--psm 4 --oem 3", "--psm 6 --oem 3", "--psm 11 --oem 3"]
+    # Try layout modes in order and keep the best-scoring result, but stop
+    # as soon as one is clearly good — running all three configs on every
+    # single page unconditionally (as an earlier version of this function
+    # did) tripled OCR time on every request, which is punishing on a
+    # resource-limited host. PSM 6 (uniform block of text) is tried first
+    # since it's the fastest/most broadly correct default for ordinary
+    # documents; PSM 11 (sparse text — the ID-card-friendly mode) and
+    # PSM 4 (single column) are only attempted if the previous pass looks
+    # weak, so a normal document does one Tesseract pass, not three.
+    configs = ["--psm 6 --oem 3", "--psm 11 --oem 3", "--psm 4 --oem 3"]
+    _GOOD_ENOUGH_SCORE = 15 * 55  # ~15 words at ~55 mean confidence
     best_raw = None
     best_score = -1.0
     last_error = None
@@ -142,6 +144,8 @@ def ocr_page(image):
         score = mean_conf * n_words
         if score > best_score:
             best_score, best_raw = score, raw
+        if best_score >= _GOOD_ENOUGH_SCORE:
+            break
 
     raw = best_raw
     if raw is None:

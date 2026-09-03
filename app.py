@@ -16,13 +16,20 @@ os.makedirs(os.path.join(BASE_DIR, "jobs"), exist_ok=True)
 
 MAX_CONTENT_LENGTH = 25 * 1024 * 1024  # 25 MB upload limit
 
+# spaCy NER inference is real CPU cost per page, on top of OCR and any
+# Gemini calls — on a resource-limited host (e.g. Railway's free tier)
+# that adds up. The regex/label detectors and Gemini already cover most
+# PII, so this is a cheap lever to trade a bit of free-text name/org/
+# location coverage for speed without a code change.
+USE_NER = os.getenv("DISABLE_NER", "").strip().lower() not in ("1", "true", "yes")
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
 
 @app.route("/")
 def index():
-    return render_template("index.html", ner_active=ner.ner_available(),
+    return render_template("index.html", ner_active=(USE_NER and ner.ner_available()),
                             ocr_languages=ocr.active_ocr_langs())
 
 
@@ -38,7 +45,7 @@ def _run_extraction_job(job_id, input_path):
     ones, so nothing has a mid-length window to be killed in.
     """
     try:
-        page_images, instances, ocr_cache = pipeline.extract_fields(input_path)
+        page_images, instances, ocr_cache = pipeline.extract_fields(input_path, use_ner=USE_NER)
     except Exception as exc:
         traceback.print_exc()
         jobs.set_status(BASE_DIR, job_id, "error", error=f"Could not read this PDF: {exc}")
@@ -57,7 +64,7 @@ def _run_extraction_job(job_id, input_path):
         result = {
             "num_pages": len(page_images),
             "groups": groups,
-            "ner_active": ner.ner_available(),
+            "ner_active": (USE_NER and ner.ner_available()),
             "ocr_languages": ocr.active_ocr_langs(),
         }
         if not groups:
@@ -168,7 +175,7 @@ def mask():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "ner_active": ner.ner_available(),
+    return jsonify({"status": "ok", "ner_active": (USE_NER and ner.ner_available()),
                      "ocr_languages": ocr.active_ocr_langs()})
 
 
