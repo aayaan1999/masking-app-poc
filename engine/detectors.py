@@ -464,14 +464,20 @@ def detect_name(words, lines, page, img_w, img_h, counter):
                           if i not in label_idxs and words[i]["text"].strip(" /-:|") != ""]
             claimed_lines.add(li)
 
-            if not value_idxs and li + 1 < len(lines):
-                # Label-only line (value wraps to the next row) — same
-                # continuation guard used by detect_address.
+            if li + 1 < len(lines):
+                # Value continues on the next row — either because this
+                # was a label-only line (value wraps entirely), or because
+                # a long name only partly fit before wrapping. Previously
+                # only the label-only case pulled in the next line, so a
+                # name that started next to its label but wrapped a second
+                # or third token onto the following row got silently
+                # truncated to just the first token(s), leaving the rest
+                # of the name outside the mask box.
                 nxt = lines[li + 1]
                 gap = nxt["top"] - line["bottom"]
                 avg_h = max(1, line["bottom"] - line["top"])
-                if gap < avg_h * 1.5 and not _LABEL_LINE.match(nxt["text"]):
-                    value_idxs = list(nxt["word_idxs"])
+                if gap < avg_h * 1.5 and not _LABEL_LINE.match(nxt["text"]) and not i18n_labels.contains_any_keyword(nxt["text"], NAME_KEYWORDS):
+                    value_idxs = value_idxs + list(nxt["word_idxs"])
                     claimed_lines.add(li + 1)
 
             if not value_idxs:

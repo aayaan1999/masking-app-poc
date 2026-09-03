@@ -69,7 +69,9 @@ def test_gemini_detector_parses_json_and_converts_bbox(monkeypatch):
     assert len(instances) == 1
     assert instances[0]["field_type"] == "email"
     assert instances[0]["display_label"] == "Email Address"
-    assert instances[0]["bbox"] == (10, 20, 90, 35)
+    # Gemini's own bbox is now trusted directly (padded slightly) instead
+    # of being discarded and reconstructed from OCR word matches.
+    assert instances[0]["bbox"] == (6, 16, 94, 39)
 
 
 def test_gemini_prompt_includes_document_and_ocr_guidance(monkeypatch):

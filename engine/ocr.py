@@ -103,8 +103,17 @@ def ocr_page(image):
     this line except the label" don't care about reading order and are
     unaffected; only human-facing preview text may read reversed.
     """
+    # Try every layout mode and keep the best-scoring result rather than
+    # the first non-empty one. PSM 4 (assume a single column of text) will
+    # often produce *some* garbled output even on a scattered ID-card
+    # layout, which used to make the loop stop right there and never try
+    # PSM 11 (sparse text) — the mode the rest of this module's docstring
+    # says is usually the right one for that layout. Scoring by mean
+    # confidence * word count picks whichever config actually read the
+    # page best instead of whichever ran first.
     configs = ["--psm 4 --oem 3", "--psm 6 --oem 3", "--psm 11 --oem 3"]
-    raw = None
+    best_raw = None
+    best_score = -1.0
     last_error = None
     for cfg in configs:
         try:
@@ -112,11 +121,29 @@ def ocr_page(image):
                 image, output_type=pytesseract.Output.DICT,
                 lang=active_ocr_langs(), config=cfg,
             )
-            if raw.get("text") and any(text and str(text).strip() for text in raw["text"]):
-                break
         except Exception as exc:
             last_error = exc
+            continue
 
+        confs, n_words = [], 0
+        for i, text in enumerate(raw.get("text", [])):
+            if not text or not str(text).strip():
+                continue
+            n_words += 1
+            try:
+                c = float(raw["conf"][i])
+                if c >= 0:
+                    confs.append(c)
+            except (ValueError, TypeError, KeyError, IndexError):
+                pass
+        if n_words == 0:
+            continue
+        mean_conf = (sum(confs) / len(confs)) if confs else 0.0
+        score = mean_conf * n_words
+        if score > best_score:
+            best_score, best_raw = score, raw
+
+    raw = best_raw
     if raw is None:
         if last_error is not None:
             raise last_error

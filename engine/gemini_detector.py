@@ -2,11 +2,24 @@ import base64
 import json
 import os
 import re
+import time
+import traceback
 import urllib.request
 import urllib.error
 from io import BytesIO
 
 from .ocr import words_bbox
+
+# Verified live against the project's actual API key (see chat/session
+# notes) as of 2026-09: "gemini-3.6-flash" is the model Google's own API
+# error message names as the current replacement for retired flash models,
+# and responds reliably. "gemini-flash-latest" is Google's rolling alias
+# for whatever the current flash model is, kept as the fallback so a
+# future model retirement/rename doesn't require another manual fix here —
+# but it was seen intermittently 503-ing (capacity, not an error in this
+# code) so it isn't the primary. Both overridable via env var.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-flash-latest")
 
 SYSTEM_PROMPT = r"""
 You are an expert document data extraction system. Scan and process every page of the provided document thoroughly from start to finish. Extract all visible identification, demographic, and financial fields and visible values. Do not omit any clearly visible data fields.
@@ -71,8 +84,49 @@ FIELD_CATEGORIES = {
 
 
 
+def _call_gemini_once(model, api_key, mime_type, data, prompt):
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": data,
+                        }
+                    },
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.0,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = json.load(resp)
+        return body.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+
+
 def _call_gemini(image_or_bytes, prompt):
-    """Calls Gemini with either a page image or raw PDF bytes."""
+    """
+    Calls Gemini with either a page image or raw PDF bytes. Every failure
+    used to be swallowed into a silent "" return, which made a bad model
+    name / expired key / quota error indistinguishable from "Gemini just
+    found nothing" — printing here is what lets that actually surface in
+    server logs instead of masquerading as a detection gap.
+    """
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         return ""
@@ -86,41 +140,45 @@ def _call_gemini(image_or_bytes, prompt):
         else:
             data = base64.b64encode(image_or_bytes).decode("ascii")
             mime_type = "application/pdf"
-
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": mime_type,
-                                "data": data,
-                            }
-                        },
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.0,
-                "responseMimeType": "application/json",
-            },
-        }
-
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={api_key}"
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.load(resp)
-            return body.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, json.JSONDecodeError, OSError):
+    except Exception:
+        traceback.print_exc()
         return ""
+
+    _TRANSIENT_CODES = {429, 500, 502, 503, 504}
+
+    for model in (GEMINI_MODEL, GEMINI_FALLBACK_MODEL):
+        attempts = 2 if model == GEMINI_MODEL else 1
+        move_to_fallback = False
+        for attempt in range(attempts):
+            try:
+                return _call_gemini_once(model, api_key, mime_type, data, prompt)
+            except urllib.error.HTTPError as exc:
+                body = ""
+                try:
+                    body = exc.read().decode("utf-8", "replace")[:500]
+                except Exception:
+                    pass
+                print(f"[gemini_detector] {model} request failed: HTTP {exc.code} {body}")
+                transient = exc.code in _TRANSIENT_CODES
+                retriable = exc.code == 404 or transient
+            except (urllib.error.URLError, ValueError, json.JSONDecodeError, OSError) as exc:
+                # A cold/slow model can simply time out (OSError covers
+                # socket.timeout) rather than return an HTTP error code —
+                # that deserves the same retry-then-fallback treatment as
+                # a 503, not an immediate give-up.
+                print(f"[gemini_detector] {model} request failed: {exc!r}")
+                transient, retriable = True, True
+
+            if transient and attempt + 1 < attempts:
+                time.sleep(1.5)
+                continue  # model is momentarily overloaded/rate-limited/slow — brief retry
+            if retriable and model != GEMINI_FALLBACK_MODEL:
+                move_to_fallback = True
+                break  # model name is wrong/retired, or still unavailable — try the fallback model
+            return ""
+        if not move_to_fallback:
+            return ""
+    return ""
 
 
 def _call_gemini_pdf_bytes(pdf_bytes, prompt):
@@ -221,20 +279,55 @@ def _coerce_bbox(raw_bbox, img_w, img_h):
     return (left, top, right, bottom)
 
 
-def _bbox_from_words(words, value, bbox, img_w, img_h):
+def _bbox_from_words(words, value, near_cx, near_cy, img_w, img_h):
+    """
+    Fallback box for when Gemini didn't give us a usable bbox: finds the
+    OCR words nearest to Gemini's approximate location whose text plausibly
+    matches the value, rather than scanning the whole page. Whole-page
+    substring matching used to pick up any word anywhere that happened to
+    share a substring with the (space-stripped) value — e.g. a stray "id"
+    matching into "id number" fields elsewhere on the page — which produced
+    boxes that didn't actually cover the real text. Restricting the
+    candidate pool to words near Gemini's own coordinates keeps a
+    same-token collision elsewhere on the page from hijacking the box.
+    """
     if not words:
         return (0, 0, img_w, img_h)
-    target = re.sub(r"\W+", "", (value or "").lower())
-    idxs = []
+
+    value_tokens = [re.sub(r"\W+", "", t.lower()) for t in (value or "").split()]
+    value_tokens = [t for t in value_tokens if t]
+    max_dist = max(img_w, img_h) * 0.12  # stay local to Gemini's reported spot
+
+    candidates = []
     for i, w in enumerate(words):
-        token = re.sub(r"\W+", "", w["text"].lower())
-        if target and (target in token or token in target):
-            idxs.append(i)
+        wx = (w["left"] + w["right"]) / 2
+        wy = (w["top"] + w["bottom"]) / 2
+        dist = abs(wx - near_cx) + abs(wy - near_cy)
+        if dist <= max_dist:
+            candidates.append((dist, i))
+    candidates.sort()
+
+    idxs = []
+    if value_tokens:
+        remaining = list(value_tokens)
+        for _, i in candidates:
+            token = re.sub(r"\W+", "", words[i]["text"].lower())
+            if not token:
+                continue
+            for j, vt in enumerate(remaining):
+                if token == vt or (len(token) > 2 and (token in vt or vt in token)):
+                    idxs.append(i)
+                    remaining.pop(j)
+                    break
+            if not remaining:
+                break
+
     if not idxs:
-        cx = bbox[0] + bbox[2] / 2
-        cy = bbox[1] + bbox[3] / 2
-        idxs = [min(range(len(words)), key=lambda i: abs(((words[i]["left"] + words[i]["right"]) / 2) - cx) + abs(((words[i]["top"] + words[i]["bottom"]) / 2) - cy))]
-    return words_bbox(words, idxs, img_w, img_h, pad=0)
+        idxs = [candidates[0][1]] if candidates else [
+            min(range(len(words)), key=lambda i: abs(((words[i]["left"] + words[i]["right"]) / 2) - near_cx)
+                + abs(((words[i]["top"] + words[i]["bottom"]) / 2) - near_cy))
+        ]
+    return words_bbox(words, idxs, img_w, img_h, pad=6)
 
 
 def detect_gemini_fields(image, words, lines, page, img_w, img_h, counter):
@@ -265,10 +358,21 @@ def detect_gemini_fields(image, words, lines, page, img_w, img_h, counter):
         bbox = _coerce_bbox(bbox, img_w, img_h)
         left, top, right, bottom = bbox
 
-        if right <= left or bottom <= top:
-            left, top, right, bottom = _bbox_from_words(words, value, (left, top, img_w, img_h), img_w, img_h)
+        # Gemini looked at the actual pixels, so its own bbox is more
+        # trustworthy than reconstructing one from Tesseract's OCR text —
+        # especially for names/values Tesseract misread. Only fall back to
+        # word-matching (constrained to near Gemini's reported location)
+        # when Gemini didn't give us a usable box at all.
+        if right <= left or bottom <= top or (right - left) * (bottom - top) < 4:
+            near_cx = left if right > left else left
+            near_cy = top if bottom > top else top
+            left, top, right, bottom = _bbox_from_words(words, value, near_cx, near_cy, img_w, img_h)
         else:
-            left, top, right, bottom = _bbox_from_words(words, value, (left, top, right - left, bottom - top), img_w, img_h)
+            pad = 4
+            left = max(0, left - pad)
+            top = max(0, top - pad)
+            right = min(img_w, right + pad)
+            bottom = min(img_h, bottom + pad)
 
         label = str(item.get("label") or FIELD_LABELS.get(field_type, field_type.replace("_", " ").title()))
         category = FIELD_CATEGORIES.get(field_type, "generic")

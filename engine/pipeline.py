@@ -26,6 +26,64 @@ def _bbox_overlaps(a, b):
     return ax0 < bx1 and ax1 > bx0 and ay0 < by1 and ay1 > by0
 
 
+def _union_bbox(a, b):
+    return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+
+
+# Different detectors label the same *kind* of thing differently (e.g. the
+# regex name detector emits "person_name", spaCy NER emits "entity:person").
+# Overlap-merging only within an exact field_type match would miss those —
+# this maps such near-duplicates onto a shared merge key so they still get
+# merged. Fields not listed here merge only with an identical field_type.
+_MERGE_EQUIVALENTS = {
+    "person_name": "name", "entity:person": "name",
+    "address": "address",
+    "email": "email",
+    "phone_number": "phone", "phone": "phone",
+}
+
+
+def _merge_overlapping_instances(instances):
+    """
+    The same physical field (most often a name) can be found independently
+    by the regex/OCR-line detector, the Gemini vision detector, and the
+    spaCy NER detector — each with its own, sometimes only-partial, bbox.
+    Left unmerged, those show up as separate checkbox groups in the UI, so
+    checking one leaves the other detector's (possibly incomplete) box for
+    the same text unredacted. This merges same-page instances of the same
+    field_type whose boxes overlap into one instance with the union of
+    their boxes and the longest of their detected values, so a single
+    checkbox always covers the full physical text.
+    """
+    by_page_type = {}
+    for inst in instances:
+        merge_key = _MERGE_EQUIVALENTS.get(inst["field_type"], inst["field_type"])
+        by_page_type.setdefault((inst["page"], merge_key), []).append(inst)
+
+    merged = []
+    for group in by_page_type.values():
+        used = [False] * len(group)
+        for i, inst in enumerate(group):
+            if used[i]:
+                continue
+            used[i] = True
+            current = dict(inst)
+            changed = True
+            while changed:
+                changed = False
+                for j, other in enumerate(group):
+                    if used[j]:
+                        continue
+                    if _bbox_overlaps(current["bbox"], other["bbox"]):
+                        current["bbox"] = _union_bbox(current["bbox"], other["bbox"])
+                        if len(other["value"]) > len(current["value"]):
+                            current["value"] = other["value"]
+                        used[j] = True
+                        changed = True
+            merged.append(current)
+    return merged
+
+
 def extract_fields(pdf_path: str, use_ner: bool = True):
     """
     Runs OCR + every detector on every page.
@@ -80,6 +138,7 @@ def extract_fields(pdf_path: str, use_ner: bool = True):
             entity_instances = ner.detect_entities(words, lines, page_idx, img_w, img_h, counter, claimed)
             all_instances += entity_instances
 
+    all_instances = _merge_overlapping_instances(all_instances)
     return page_images, all_instances, ocr_cache
 
 
