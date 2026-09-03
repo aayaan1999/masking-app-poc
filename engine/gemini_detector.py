@@ -14,13 +14,17 @@ from .detectors import DATE_CONCEPT_LABELS
 # Verified live against the project's actual API key (see chat/session
 # notes) as of 2026-09: "gemini-3.6-flash" is the model Google's own API
 # error message names as the current replacement for retired flash models,
-# and responds reliably. "gemini-flash-latest" is Google's rolling alias
-# for whatever the current flash model is, kept as the fallback so a
-# future model retirement/rename doesn't require another manual fix here —
-# but it was seen intermittently 503-ing (capacity, not an error in this
-# code) so it isn't the primary. Both overridable via env var.
+# and responds reliably — used as the primary model since it gave the
+# best extraction quality against this app's prompt. "gemini-2.5-flash-lite"
+# is the fallback: on Google's free tier, flash-lite models get a much
+# higher daily request quota than full flash models, so once the primary
+# model's quota is exhausted (HTTP 429 — see _TRANSIENT_CODES below,
+# which treats 429 the same as a transient outage and falls back) this
+# keeps multi-page documents working instead of erroring out for the
+# rest of the day, at some cost to extraction accuracy on a lighter
+# model. Both overridable via env var.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-flash-latest")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
 
 SYSTEM_PROMPT = r"""
 You are an expert document data extraction system. Scan and process every page of the provided document thoroughly from start to finish. Extract all visible identification, demographic, and financial fields and visible values. Do not omit any clearly visible data fields.
@@ -190,17 +194,22 @@ def _call_gemini(image_or_bytes, prompt):
                 print(f"[gemini_detector] {model} request failed: HTTP {exc.code} {body}")
                 transient = exc.code in _TRANSIENT_CODES
                 retriable = exc.code == 404 or transient
+                # A 429 on this model is a daily quota cap, not a blip —
+                # retrying the same model 1.5s later is guaranteed to
+                # fail again, so go straight to the fallback model
+                # instead of wasting an attempt (and the wait) on it.
+                retry_same_model = transient and exc.code != 429
             except (urllib.error.URLError, ValueError, json.JSONDecodeError, OSError) as exc:
                 # A cold/slow model can simply time out (OSError covers
                 # socket.timeout) rather than return an HTTP error code —
                 # that deserves the same retry-then-fallback treatment as
                 # a 503, not an immediate give-up.
                 print(f"[gemini_detector] {model} request failed: {exc!r}")
-                transient, retriable = True, True
+                transient, retriable, retry_same_model = True, True, True
 
-            if transient and attempt + 1 < attempts:
+            if retry_same_model and attempt + 1 < attempts:
                 time.sleep(1.5)
-                continue  # model is momentarily overloaded/rate-limited/slow — brief retry
+                continue  # model is momentarily overloaded/slow — brief retry
             if retriable and model != GEMINI_FALLBACK_MODEL:
                 move_to_fallback = True
                 break  # model name is wrong/retired, or still unavailable — try the fallback model
