@@ -32,38 +32,68 @@ def _union_bbox(a, b):
     return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
 
 
-# Different detectors label the same *kind* of thing differently (e.g. the
-# regex name detector emits "person_name", spaCy NER emits "entity:person").
-# Overlap-merging only within an exact field_type match would miss those —
-# this maps such near-duplicates onto a shared merge key so they still get
-# merged. Fields not listed here merge only with an identical field_type.
-_MERGE_EQUIVALENTS = {
-    "person_name": "name", "entity:person": "name",
-    "address": "address",
-    "email": "email",
-    "phone_number": "phone", "phone": "phone",
-}
+def _overlap_ratio(a, b):
+    """Intersection area as a fraction of the smaller box's area (0 if disjoint)."""
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+    if iw == 0 or ih == 0:
+        return 0.0
+    area_a = max(1, (ax1 - ax0) * (ay1 - ay0))
+    area_b = max(1, (bx1 - bx0) * (by1 - by0))
+    return (iw * ih) / min(area_a, area_b)
+
+
+def _field_priority(inst):
+    """
+    Which detector's naming to trust when two overlapping instances
+    disagree on what to call the same physical field. Highest wins:
+      3 - a specific, precisely-classified field (every regex/GCC/table
+          detector, plus Gemini's own normalized types like dob,
+          date_of_issue, person_name, occupation, ...) — these already
+          carry a real, human-meaningful field name.
+      2 - the generic "label:<text>" detector — its name comes directly
+          from whatever label is actually printed on the document, so
+          it's still a genuine label, just not one the app specifically
+          recognizes.
+      1 - spaCy NER ("entity:person" etc.) — a free-text mention with no
+          real printed label backing it, the least specific of the four
+          detectors, kept only as a last resort.
+    """
+    ft = inst["field_type"]
+    if ft.startswith("entity:"):
+        return 1
+    if ft.startswith("label:"):
+        return 2
+    return 3
 
 
 def _merge_overlapping_instances(instances):
     """
-    The same physical field (most often a name) can be found independently
-    by the regex/OCR-line detector, the Gemini vision detector, and the
-    spaCy NER detector — each with its own, sometimes only-partial, bbox.
-    Left unmerged, those show up as separate checkbox groups in the UI, so
-    checking one leaves the other detector's (possibly incomplete) box for
-    the same text unredacted. This merges same-page instances of the same
-    field_type whose boxes overlap into one instance with the union of
-    their boxes and the longest of their detected values, so a single
-    checkbox always covers the full physical text.
+    The same physical field is routinely found more than once — by the
+    regex/OCR-line detector, the Gemini vision detector, the generic
+    "any Label: Value" fallback, and spaCy NER — each under its own
+    field_type/display_label and sometimes only a partial bbox. Grouping
+    by page and field_type only merges instances that happen to already
+    agree on a name (or fall under a small hand-picked equivalence map),
+    which is too narrow: a field Gemini calls "occupation" and the
+    generic detector independently finds as "label:occupation" describe
+    the exact same printed text but never matched on field_type, so they
+    used to show up as two separate, confusing checkbox entries for one
+    field. Bucketing by page and merging on *physical overlap* instead
+    catches this regardless of what each detector happens to call it,
+    and _field_priority picks the most specific/real label as the name
+    kept for the merged instance — so a field always shows up once,
+    under its actual label when it has one, not once per detector.
     """
-    by_page_type = {}
+    by_page = {}
     for inst in instances:
-        merge_key = _MERGE_EQUIVALENTS.get(inst["field_type"], inst["field_type"])
-        by_page_type.setdefault((inst["page"], merge_key), []).append(inst)
+        by_page.setdefault(inst["page"], []).append(inst)
 
     merged = []
-    for group in by_page_type.values():
+    for group in by_page.values():
         used = [False] * len(group)
         for i, inst in enumerate(group):
             if used[i]:
@@ -76,10 +106,14 @@ def _merge_overlapping_instances(instances):
                 for j, other in enumerate(group):
                     if used[j]:
                         continue
-                    if _bbox_overlaps(current["bbox"], other["bbox"]):
+                    if _overlap_ratio(current["bbox"], other["bbox"]) >= 0.3:
                         current["bbox"] = _union_bbox(current["bbox"], other["bbox"])
                         if len(other["value"]) > len(current["value"]):
                             current["value"] = other["value"]
+                        if _field_priority(other) > _field_priority(current):
+                            current["field_type"] = other["field_type"]
+                            current["display_label"] = other["display_label"]
+                            current["category"] = other["category"]
                         used[j] = True
                         changed = True
             merged.append(current)
