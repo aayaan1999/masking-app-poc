@@ -132,6 +132,33 @@ DATE_PATTERN = re.compile(
     r'\b\d{1,2}[\-\s][A-Za-z]{3,9}[\-\s]\d{2,4}\b'
 )
 
+_TIME_OF_DAY = re.compile(r'^\d{1,2}:\d{2}(?::\d{2})?$')
+_AM_PM = re.compile(r'^(?:am|pm)$', re.I)
+
+
+def _trailing_time_idxs(line, words, date_idx):
+    """
+    Word index/indices for a time-of-day immediately following a date
+    token on the same printed row (e.g. "10-Aug-2026, 09:30 AM"). Without
+    this, only the date itself was ever captured/masked — the time sat
+    right next to it, unclaimed by any detector, and stayed fully
+    visible on the output even when the user masked that date field.
+    """
+    idxs = line["word_idxs"]
+    if date_idx not in idxs:
+        return []
+    pos = idxs.index(date_idx)
+    extra = []
+    j = pos + 1
+    if j < len(idxs) and words[idxs[j]]["text"].strip() == ",":
+        j += 1
+    if j < len(idxs) and _TIME_OF_DAY.match(words[idxs[j]]["text"].strip(",")):
+        extra.append(idxs[j])
+        j += 1
+        if j < len(idxs) and _AM_PM.match(words[idxs[j]]["text"].strip(".,")):
+            extra.append(idxs[j])
+    return extra
+
 DATE_CONCEPT_LABELS = {
     "dob": "Date of Birth",
     "date_of_issue": "Date of Issue",
@@ -400,8 +427,12 @@ def detect_labelled_dates(words, lines, page, img_w, img_h, counter):
                                     page, words_bbox(words, date_idxs, img_w, img_h), counter.next()))
         else:
             for i in date_idxs:
-                out.append(_mk("date_unlabelled", "Date (unlabelled)", "generic", words[i]["text"],
-                                page, words_bbox(words, [i], img_w, img_h), counter.next()))
+                extra = _trailing_time_idxs(line, words, i)
+                idxs = [i] + extra
+                val = " ".join(words[k]["text"] for k in idxs)
+                out.append(_mk("date_unlabelled", "Date (unlabelled)", "generic", val,
+                                page, words_bbox(words, idxs, img_w, img_h), counter.next()))
+                seen.update(idxs)
         seen.update(date_idxs)
     return out, seen
 
@@ -628,8 +659,11 @@ def detect_address(words, lines, page, img_w, img_h, counter):
     for i, w in enumerate(words):
         if i in seen:
             continue
-        tl = w["text"].lower()
-        if (any(kw in tl for kw in ["s/o", "w/o", "d/o", "village", "dist", "taluk"])
+        # Word-boundary-aware (not plain substring) — "dist" as a bare
+        # substring check matched inside "District" (e.g. "Medical
+        # District" in an address header), flagging an unrelated word as
+        # its own tiny "Address" field.
+        if (i18n_labels.contains_any_keyword(w["text"], ["s/o", "w/o", "d/o", "village", "dist", "taluk"])
                 or PIN_FULLTOKEN.match(w["text"])) and (w["conf"] is not None and w["conf"] > 25):
             out.append(_mk("address", "Address", "contact", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
@@ -730,53 +764,85 @@ def detect_generic_labels(words, lines, page, img_w, img_h, counter, already_cla
     """
     out = []
     for li, line in enumerate(lines):
-        if any(idx in already_claimed for idx in line["word_idxs"]):
-            continue
         confs = [words[i]["conf"] for i in line["word_idxs"] if words[i]["conf"] is not None and words[i]["conf"] >= 0]
         if confs and (sum(confs) / len(confs)) < 45:
             continue
 
-        # A single printed row often packs more than one "Label: value"
-        # pair ("Blood Group: O+  Marital Status: Married"). Only ever
-        # extracting the first pair from a line meant that once value
-        # trimming correctly started stopping *before* the next label
-        # (see _trim_value_at_next_label), whatever came after it was
-        # silently dropped instead of surfaced as its own field — so this
-        # keeps re-extracting from whatever's left on the row after each
-        # consumed label/value until nothing more is found.
-        current_line = line
-        for _ in range(6):
-            pair = _extract_label_value_pair(words, current_line, lines[li + 1] if li + 1 < len(lines) else None)
-            if not pair:
-                break
-            label, value, value_idxs = pair
-
-            if not (_OWNED_LABEL_PATTERNS.search(label) or len(value) < 2
-                    or len(label) < 2 or label.lower() in {"note", "important", "instructions"}):
-                bbox = words_bbox(words, value_idxs, img_w, img_h) if value_idxs else (
-                    line["left"], line["top"], line["right"], line["bottom"]
-                )
-                display = " ".join(w.capitalize() for w in label.split())
-                out.append(_mk(
-                    f"label:{label.lower()}", display, "generic", value, page,
-                    bbox, counter.next(),
-                ))
-
-            # Only continue scanning the same row if the consumed value
-            # actually came from it (not a wrapped value pulled in from
-            # the next line, which can't be sliced the same way).
-            if value_idxs and value_idxs[-1] in current_line["word_idxs"]:
-                last_pos = current_line["word_idxs"].index(value_idxs[-1])
-                rem_idxs = current_line["word_idxs"][last_pos + 1:]
+        # A row can be *partly* claimed by an earlier detector (e.g. a
+        # name detector claims "Aarav Sharma" on "Name: Aarav Sharma
+        # Patient ID: P-883492") — skipping the whole line whenever any
+        # word on it was claimed meant a wholly separate, entirely
+        # unclaimed field packed later on that same row (here, "Patient
+        # ID: P-883492") was silently never even looked at. This instead
+        # runs extraction independently over each maximal contiguous run
+        # of *unclaimed* words on the line.
+        runs, current_run = [], []
+        for idx in line["word_idxs"]:
+            if idx in already_claimed:
+                if current_run:
+                    runs.append(current_run)
+                    current_run = []
             else:
-                rem_idxs = []
-            if not rem_idxs:
-                break
+                current_run.append(idx)
+        if current_run:
+            runs.append(current_run)
+
+        for run_idxs in runs:
+            # A single printed row often packs more than one "Label:
+            # value" pair ("Blood Group: O+  Marital Status: Married").
+            # Only ever extracting the first pair from a run meant that
+            # once value trimming correctly started stopping *before*
+            # the next label (see _trim_value_at_next_label), whatever
+            # came after it was silently dropped instead of surfaced as
+            # its own field — so this keeps re-extracting from whatever's
+            # left in the run until nothing more is found.
             current_line = {
-                **current_line,
-                "word_idxs": rem_idxs,
-                "text": " ".join(words[i]["text"] for i in rem_idxs),
+                **line, "word_idxs": run_idxs,
+                "text": " ".join(words[i]["text"] for i in run_idxs),
             }
+            # Only offer the next physical OCR row as a possible wrapped
+            # value when this run reaches the real end of the printed
+            # line. A run that stops short does so because a claimed word
+            # follows it on the *same* row (e.g. a label detector claims
+            # a field's value but not its own label token, leaving an
+            # orphaned "Name:" fragment before "Patient ID: ..." on the
+            # same line) — that fragment's value was already found and
+            # claimed right there, not wrapped onto the next row, so
+            # treating it as label-only and grabbing text off an entirely
+            # unrelated following line produced a nonsense field.
+            next_line = lines[li + 1] if (li + 1 < len(lines) and run_idxs[-1] == line["word_idxs"][-1]) else None
+            for _ in range(6):
+                pair = _extract_label_value_pair(words, current_line, next_line)
+                if not pair:
+                    break
+                label, value, value_idxs = pair
+
+                if not (_OWNED_LABEL_PATTERNS.search(label) or len(value) < 2
+                        or len(label) < 2 or label.lower() in {"note", "important", "instructions"}):
+                    bbox = words_bbox(words, value_idxs, img_w, img_h) if value_idxs else (
+                        line["left"], line["top"], line["right"], line["bottom"]
+                    )
+                    display = " ".join(w.capitalize() for w in label.split())
+                    out.append(_mk(
+                        f"label:{label.lower()}", display, "generic", value, page,
+                        bbox, counter.next(),
+                    ))
+
+                # Only continue scanning the same run if the consumed
+                # value actually came from it (not a wrapped value pulled
+                # in from the next line, which can't be sliced this way).
+                if value_idxs and value_idxs[-1] in current_line["word_idxs"]:
+                    last_pos = current_line["word_idxs"].index(value_idxs[-1])
+                    rem_idxs = current_line["word_idxs"][last_pos + 1:]
+                else:
+                    rem_idxs = []
+                if not rem_idxs:
+                    break
+                current_line = {
+                    **current_line,
+                    "word_idxs": rem_idxs,
+                    "text": " ".join(words[i]["text"] for i in rem_idxs),
+                }
     return out
 
 

@@ -52,6 +52,16 @@ together. Classify every date by what it actually represents:
 
 For GCC identity documents, include fields such as ID Number, Name, Date of Birth, Nationality, Sex, Occupation, Employer, Place of Issue, Issuing Authority, Issue Date, and Expiry Date when they are visible.
 
+For medical documents (discharge summaries, prescriptions, lab reports, referral letters), extract the
+identifying/administrative fields — Patient Name, Patient ID / MRN (use field_type "id_number"),
+Age/Gender, Treating Physician (and their registration/license number), Admission Date, Discharge Date,
+and any hospital/clinic contact details — but do NOT extract clinical content as a person, organization,
+or location: a diagnosis name, medical condition, symptom, medication name, dosage instruction, or the
+narrative "course in hospital" text is not a person/org/location field even if a word in it is
+capitalized or looks like a proper noun (e.g. "Dengue Fever", "Thrombocytopenia", "Paracetamol", "OPD",
+"Discharge Summary" as a document title) — skip those entirely rather than forcing them into one of the
+listed field_types.
+
 If a field is not clearly visible or present, skip it. If no fields are found, return an empty array: []
 """
 
@@ -263,6 +273,9 @@ def _normalize_field_type(field_type):
         "national_id": "id_number",
         "civil_id": "id_number",
         "emirates_id": "id_number",
+        "patient_id": "id_number",
+        "mrn": "id_number",
+        "registration_number": "id_number",
         "gender": "sex",
         "job": "occupation",
         "employer": "organization",
