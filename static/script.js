@@ -1,8 +1,6 @@
 const stepUpload = document.getElementById('step-upload');
-const stepReview = document.getElementById('step-review');
 const stepPreview = document.getElementById('step-preview');
 const groupsContainer = document.getElementById('groups-container');
-const reviewSubhead = document.getElementById('review-subhead');
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('file-input');
 const fileName = document.getElementById('file-name');
@@ -87,11 +85,11 @@ function pollJobStatus(jobId) {
         numPages = data.num_pages || (data.extra && data.extra.num_pages) || 1;
         pageSizes = sizes;
         allInstances = instances;
-        renderGroups(groups, message);
-        previewSubhead.textContent = `${numPages} page(s) scanned. Draw a box on the preview to create a custom redaction.`;
+        renderGroups(groups);
+        const fieldsMsg = message || 'Select what to mask below, or draw a box on the preview.';
+        previewSubhead.textContent = `${numPages} page(s) scanned. ${fieldsMsg}`;
         initPreview();
         stepUpload.hidden = true;
-        stepReview.hidden = false;
         stepPreview.hidden = false;
         setStatus(uploadStatus, '');
       }
@@ -99,14 +97,13 @@ function pollJobStatus(jobId) {
     .catch((err) => setStatus(uploadStatus, err.message || 'Processing failed', true));
 }
 
-function renderGroups(groups, message) {
+function renderGroups(groups) {
   const groupList = Array.isArray(groups) ? groups : [];
   groupsContainer.innerHTML = '';
   selectedGroupIds.clear();
   selectedInstanceIds.clear();
   groupsById = {};
   groupList.forEach((g) => { groupsById[g.group_id] = g; });
-  reviewSubhead.textContent = message || 'Select what to mask. Fields are grouped by type — checking one masks every occurrence.';
   if (!groupList.length) {
     groupsContainer.innerHTML = '<p class="empty-state">No fields detected automatically. You can still use the description box below, or draw boxes directly on the preview.</p>';
     return;
@@ -389,7 +386,6 @@ maskBtn.addEventListener('click', () => {
 });
 
 backBtn.addEventListener('click', () => {
-  stepReview.hidden = true;
   stepPreview.hidden = true;
   stepUpload.hidden = false;
   groupsContainer.innerHTML = '';
@@ -402,7 +398,6 @@ backBtn.addEventListener('click', () => {
   allInstances = [];
   groupsById = {};
   instructionsInput.value = '';
-  reviewSubhead.textContent = 'Select what to mask. Fields are grouped by type — checking one masks every occurrence.';
   setStatus(uploadStatus, '');
   setStatus(maskStatus, '');
   currentJobId = null;
