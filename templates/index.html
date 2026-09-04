@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Redactor — Automatic document field masking</title>
+<title>Docu Mask — Automatic document field masking</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -14,12 +14,19 @@
 <div class="grain"></div>
 
 <header class="topbar">
-  <div class="topbar__mark">
-    <span class="topbar__bracket">[</span>REDACTOR<span class="topbar__bracket">]</span>
+  <div class="topbar__brand">
+    <span class="topbar__logo">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M9 8.5 6 12l3 3.5M15 8.5 18 12l-3 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </span>
+    <span class="topbar__wordmark">APPBAY<span class="topbar__tagline">ACCELERATING IT</span></span>
   </div>
   <div class="topbar__meta">
-    OCR: <span class="pill{% if 'urd' in ocr_languages or 'ara' in ocr_languages %} pill--on{% endif %}">{{ ocr_languages }}</span>
+    <span class="pill{% if 'urd' in ocr_languages or 'ara' in ocr_languages %} pill--on{% endif %}">OCR: {{ ocr_languages }}</span>
     {% if ner_active %}<span class="pill pill--on">NER model active</span>{% else %}<span class="pill">regex &amp; layout detection only</span>{% endif %}
+    <span class="topbar__product">Docu Mask</span>
   </div>
 </header>
 
@@ -27,7 +34,8 @@
 
   <!-- STEP 1: upload -->
   <section id="step-upload" class="panel step">
-    <h1 class="headline">Black out what<br>shouldn't travel.</h1>
+    <span class="eyebrow">DOCUMENT REDACTION · ON-DEVICE PROCESSING</span>
+    <h1 class="headline">Redact Sensitive Data.<br>Retain Full Control.</h1>
     <p class="subhead">
       Upload any PDF — an ID card, PAN card, offer letter, or a full bank
       statement. We scan the whole document, list out every field we
@@ -38,7 +46,8 @@
     <div id="dropzone" class="dropzone">
       <input type="file" id="file-input" accept="application/pdf" hidden>
       <div class="dropzone__icon">＋</div>
-      <div class="dropzone__label">Drop a PDF here, or <span class="dropzone__browse">browse</span></div>
+      <div class="dropzone__label">Drop a PDF here, or <span class="dropzone__browse">browse files</span></div>
+      <div class="dropzone__hint">ACCEPTED FORMAT: PDF · MAX SIZE: 25 MB</div>
       <div class="dropzone__filename" id="file-name"></div>
     </div>
 
@@ -56,38 +65,50 @@
       <label for="instructions" class="instructions__legend">ANYTHING ELSE? DESCRIBE IT IN PLAIN ENGLISH</label>
       <textarea id="instructions" placeholder='e.g. mask the name John Smith, redact "Acme Corp" everywhere, or mask all records for Sarah Ahmed'></textarea>
     </div>
-
-    <div class="review-actions">
-      <button type="button" id="back-btn" class="btn-secondary">← Upload a different file</button>
-      <button type="button" id="mask-btn" class="btn-primary">
-        <span class="btn-primary__label">Mask document</span>
-        <span class="btn-primary__arrow">→</span>
-      </button>
-    </div>
-
-    <div id="mask-status" class="status"></div>
   </section>
 
   <!-- STEP 2b: visual preview with detection boxes, drawable regions -->
   <section id="step-preview" class="panel step" hidden>
-    <h2 class="headline headline--sm">Preview</h2>
-    <p class="subhead">
-      Click a box to toggle it for redaction. Drag anywhere else on the page to draw a
-      custom box of your own.
-    </p>
+    <h2 class="headline headline--sm">Review the document</h2>
+    <p class="subhead" id="preview-subhead">Draw a box on the preview to create a custom redaction.</p>
 
-    <div class="preview-toolbar">
-      <div class="preview-pager">
-        <button type="button" id="preview-prev" class="btn-secondary">← Prev page</button>
-        <span id="preview-page-label" class="preview-pager__label">Page 1</span>
-        <button type="button" id="preview-next" class="btn-secondary">Next page →</button>
+    <div class="preview-layout">
+      <div class="preview-main">
+        <div class="preview-pager">
+          <button type="button" id="preview-prev" class="btn-secondary">← Prev page</button>
+          <span id="preview-page-label" class="preview-pager__label">Page 1</span>
+          <button type="button" id="preview-next" class="btn-secondary">Next page →</button>
+        </div>
+
+        <div id="preview-frame" class="preview-frame">
+          <span class="preview-frame__snip">✂</span>
+          <div id="preview-canvas" class="preview-canvas">
+            <img id="preview-image" class="preview-canvas__image" draggable="false">
+            <div id="preview-boxes" class="preview-canvas__boxes"></div>
+          </div>
+        </div>
       </div>
-      <button type="button" id="preview-clear-manual" class="btn-secondary">Clear custom boxes</button>
-    </div>
 
-    <div id="preview-canvas" class="preview-canvas">
-      <img id="preview-image" class="preview-canvas__image" draggable="false">
-      <div id="preview-boxes" class="preview-canvas__boxes"></div>
+      <aside class="preview-sidebar">
+        <span class="eyebrow eyebrow--sidebar">CUSTOM REDACTIONS</span>
+        <p class="preview-sidebar__desc">Draw a box on the preview to add a new redaction. Undo or redo to refine it.</p>
+
+        <button type="button" id="undo-btn" class="btn-side" disabled>
+          <span class="btn-side__icon">↺</span> Undo
+        </button>
+        <button type="button" id="redo-btn" class="btn-side" disabled>
+          <span class="btn-side__icon">↻</span> Redo
+        </button>
+        <button type="button" id="back-btn" class="btn-side">
+          <span class="btn-side__icon">⇧</span> Upload
+        </button>
+        <button type="button" id="mask-btn" class="btn-primary">
+          <span class="btn-primary__icon">⊘</span>
+          <span class="btn-primary__label">Mask document</span>
+        </button>
+
+        <div id="mask-status" class="status"></div>
+      </aside>
     </div>
   </section>
 

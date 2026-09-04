@@ -12,18 +12,22 @@ const instructionsInput = document.getElementById('instructions');
 const maskBtn = document.getElementById('mask-btn');
 const backBtn = document.getElementById('back-btn');
 
+const previewSubhead = document.getElementById('preview-subhead');
 const previewImage = document.getElementById('preview-image');
 const previewBoxesLayer = document.getElementById('preview-boxes');
 const previewCanvas = document.getElementById('preview-canvas');
 const previewPrevBtn = document.getElementById('preview-prev');
 const previewNextBtn = document.getElementById('preview-next');
 const previewPageLabel = document.getElementById('preview-page-label');
-const previewClearManualBtn = document.getElementById('preview-clear-manual');
+const undoBtn = document.getElementById('undo-btn');
+const redoBtn = document.getElementById('redo-btn');
 
 let currentJobId = null;
 let selectedGroupIds = new Set();     // whole-group checkbox selections (field list)
 let selectedInstanceIds = new Set();  // individual instance selections (preview clicks)
 let manualBoxes = [];                 // [{ page, bbox: [l, t, r, b] }] hand-drawn in preview
+let manualUndoStack = [];             // snapshots of manualBoxes taken before each edit
+let manualRedoStack = [];
 let allInstances = [];                // every detected instance, from /extract/status
 let groupsById = {};                  // group_id -> group data (for instance_ids lookup)
 let numPages = 1;
@@ -84,6 +88,7 @@ function pollJobStatus(jobId) {
         pageSizes = sizes;
         allInstances = instances;
         renderGroups(groups, message);
+        previewSubhead.textContent = `${numPages} page(s) scanned. Draw a box on the preview to create a custom redaction.`;
         initPreview();
         stepUpload.hidden = true;
         stepReview.hidden = false;
@@ -170,6 +175,9 @@ function syncGroupCheckboxFor(inst) {
 function initPreview() {
   currentPage = 0;
   manualBoxes = [];
+  manualUndoStack = [];
+  manualRedoStack = [];
+  updateUndoRedoButtons();
   renderPreviewPage();
 }
 
@@ -187,8 +195,38 @@ previewPrevBtn.addEventListener('click', () => {
 previewNextBtn.addEventListener('click', () => {
   if (currentPage < numPages - 1) { currentPage += 1; renderPreviewPage(); }
 });
-previewClearManualBtn.addEventListener('click', () => {
-  manualBoxes = [];
+// ---- Undo/redo for hand-drawn ("custom redaction") boxes only ----
+// Detected-field selections aren't part of this history — only the
+// boxes the user drew themselves, matching the sidebar's own scope.
+
+function snapshotManualBoxes() {
+  return manualBoxes.map((b) => ({ page: b.page, bbox: b.bbox.slice() }));
+}
+
+function pushManualUndoSnapshot() {
+  manualUndoStack.push(snapshotManualBoxes());
+  manualRedoStack = [];
+  updateUndoRedoButtons();
+}
+
+function updateUndoRedoButtons() {
+  undoBtn.disabled = manualUndoStack.length === 0;
+  redoBtn.disabled = manualRedoStack.length === 0;
+}
+
+undoBtn.addEventListener('click', () => {
+  if (!manualUndoStack.length) return;
+  manualRedoStack.push(snapshotManualBoxes());
+  manualBoxes = manualUndoStack.pop();
+  updateUndoRedoButtons();
+  renderPreviewBoxes();
+});
+
+redoBtn.addEventListener('click', () => {
+  if (!manualRedoStack.length) return;
+  manualUndoStack.push(snapshotManualBoxes());
+  manualBoxes = manualRedoStack.pop();
+  updateUndoRedoButtons();
   renderPreviewBoxes();
 });
 
@@ -244,6 +282,7 @@ function renderPreviewBoxes() {
       del.textContent = '×';
       del.addEventListener('click', (evt) => {
         evt.stopPropagation();
+        pushManualUndoSnapshot();
         manualBoxes.splice(idx, 1);
         renderPreviewBoxes();
       });
@@ -296,6 +335,7 @@ window.addEventListener('mouseup', (evt) => {
 
   if (right - left < 6 || bottom - top < 6 || rect.width === 0 || rect.height === 0) return; // treat as a click, not a drag
 
+  pushManualUndoSnapshot();
   const { w, h } = pageSize();
   manualBoxes.push({
     page: currentPage,
@@ -356,6 +396,9 @@ backBtn.addEventListener('click', () => {
   selectedGroupIds.clear();
   selectedInstanceIds.clear();
   manualBoxes = [];
+  manualUndoStack = [];
+  manualRedoStack = [];
+  updateUndoRedoButtons();
   allInstances = [];
   groupsById = {};
   instructionsInput.value = '';
