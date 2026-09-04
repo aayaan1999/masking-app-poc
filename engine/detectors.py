@@ -647,23 +647,30 @@ def detect_card_number(words, lines, page, img_w, img_h, counter):
     # (ACCOUNT_NO_PATTERN is 9-18 digits) — without this, "Account
     # Number: 50100123456789" was also reported a second time as a
     # "Card Number", a plainly wrong duplicate label for the same digits.
+    # A bare 13-19 digit token has almost no structural signal of its own
+    # (unlike a phone/email pattern) — real testing turned up Tesseract
+    # occasionally hallucinating a clean-looking multi-digit "word" out
+    # of pure decorative watermark/security-pattern texture on an ID
+    # scan (no actual digits printed there at all). The old threshold
+    # (conf > 15) was far too permissive to catch that; every other
+    # numeric PII pattern in this file requires > 35.
     line_text_by_key = {l["key"]: l["text"] for l in lines}
     for i in range(n):
         if i in seen:
             continue
         w = words[i]
-        if (CARD_FULL.match(w["text"]) and (w["conf"] is not None and w["conf"] > 15) and not (
+        if (CARD_FULL.match(w["text"]) and (w["conf"] is not None and w["conf"] > 35) and not (
                 len(w["text"]) == 15 and w["text"].startswith("784"))
                 and not _ACCOUNT_CONTEXT.search(line_text_by_key.get(w.get("line_key"), ""))):
             out.append(_mk("credit_card_number", "Card Number", "financial", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
             continue
-        if CARD_GROUP_4.match(w["text"]) and (w["conf"] is not None and w["conf"] > 25):
+        if CARD_GROUP_4.match(w["text"]) and (w["conf"] is not None and w["conf"] > 35):
             group = [i]
             j = i + 1
             while (j < n and len(group) < 4 and CARD_GROUP_4.match(words[j]["text"])
-                   and (words[j]["conf"] is not None and words[j]["conf"] > 25) and words[j]["line_key"] == w["line_key"]):
+                   and (words[j]["conf"] is not None and words[j]["conf"] > 35) and words[j]["line_key"] == w["line_key"]):
                 group.append(j)
                 j += 1
             if len(group) >= 3:

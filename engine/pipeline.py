@@ -46,6 +46,32 @@ def _overlap_ratio(a, b):
     return (iw * ih) / min(area_a, area_b)
 
 
+def _axis_overlap_fractions(a, b):
+    """
+    (x_frac, y_frac): how much the two boxes overlap along each axis,
+    as a fraction of the *smaller* box's own extent in that axis.
+
+    Two printed rows that are each wide (near full page width, common
+    for a bilingual label/value line) can rack up a high *combined-area*
+    overlap ratio while only barely overlapping vertically — e.g. a name
+    row's Arabic diacritics extending a few pixels down into the next
+    row's bbox. _overlap_ratio alone can't tell that apart from two
+    detectors genuinely finding the same printed text, since a huge
+    x-overlap dominates the area product even when the y-overlap is
+    small. Checking each axis independently catches it: a real duplicate
+    detection overlaps almost completely in *both* dimensions, not just
+    one.
+    """
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+    w_a, w_b = max(1, ax1 - ax0), max(1, bx1 - bx0)
+    h_a, h_b = max(1, ay1 - ay0), max(1, by1 - by0)
+    return iw / min(w_a, w_b), ih / min(h_a, h_b)
+
+
 def _field_priority(inst):
     """
     Which detector's naming to trust when two overlapping instances
@@ -106,7 +132,8 @@ def _merge_overlapping_instances(instances):
                 for j, other in enumerate(group):
                     if used[j]:
                         continue
-                    if _overlap_ratio(current["bbox"], other["bbox"]) >= 0.3:
+                    x_frac, y_frac = _axis_overlap_fractions(current["bbox"], other["bbox"])
+                    if _overlap_ratio(current["bbox"], other["bbox"]) >= 0.3 and x_frac >= 0.4 and y_frac >= 0.4:
                         current["bbox"] = _union_bbox(current["bbox"], other["bbox"])
                         # value must travel together with whichever
                         # instance's field_type/display_label wins — a

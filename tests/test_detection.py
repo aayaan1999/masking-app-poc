@@ -1,6 +1,6 @@
 from PIL import Image
 
-from engine import detectors, gemini_detector
+from engine import detectors, gemini_detector, pipeline
 
 
 def _make_word(text, left, top, right, bottom, conf=90, line_key=0):
@@ -80,6 +80,73 @@ def test_name_detector_does_not_pull_in_same_row_sibling_column():
 
     assert len(instances) == 1
     assert instances[0]["value"] == "John Smith"
+
+
+def test_merge_does_not_fuse_adjacent_rows_that_barely_overlap_vertically():
+    # Real bboxes from a real Emirates ID scan: a "Name" row and the
+    # "Date of Birth" row directly below it are both wide (near full
+    # card width), and Arabic diacritics on the Name row extend its
+    # bbox down just enough to overlap the DOB row's bbox by ~26px out
+    # of the DOB row's own ~113px height. The combined-area overlap
+    # ratio alone crosses 0.3 purely from the huge x-overlap, wrongly
+    # fusing two entirely different fields ("Abdul Rasheed..." and
+    # "01/06/1999") into one nonsense box spanning both rows.
+    name_inst = {
+        "id": "i1", "field_type": "person_name", "display_label": "Name",
+        "category": "identity", "value": "Abdu Rasheed Pothakkaran Kabeer Kabeer Pothakkaran",
+        "page": 0, "bbox": (1008, 1637, 2430, 1807),
+    }
+    dob_inst = {
+        "id": "i2", "field_type": "dob", "display_label": "Date of Birth",
+        "category": "identity", "value": "01/06/1999",
+        "page": 0, "bbox": (1452, 1769, 1790, 1885),
+    }
+
+    merged = pipeline._merge_overlapping_instances([name_inst, dob_inst])
+
+    assert len(merged) == 2
+    field_types = {m["field_type"] for m in merged}
+    assert field_types == {"person_name", "dob"}
+
+
+def test_merge_still_fuses_genuine_duplicate_detections():
+    # Two detectors finding the *same* printed field under different
+    # names (Gemini's "occupation" vs. the generic "label:occupation")
+    # produce near-identical bboxes — this must still merge into one.
+    a = {
+        "id": "i1", "field_type": "occupation", "display_label": "Occupation",
+        "category": "generic", "value": "Engineer",
+        "page": 0, "bbox": (100, 100, 400, 140),
+    }
+    b = {
+        "id": "i2", "field_type": "label:occupation", "display_label": "Occupation",
+        "category": "generic", "value": "Engineer",
+        "page": 0, "bbox": (98, 102, 402, 138),
+    }
+
+    merged = pipeline._merge_overlapping_instances([a, b])
+
+    assert len(merged) == 1
+    assert merged[0]["field_type"] == "occupation"
+
+
+def test_card_number_rejects_low_confidence_digit_run():
+    # A real Emirates ID scan's decorative security-pattern watermark
+    # (no actual printed digits anywhere in that region) got misread by
+    # Tesseract as a clean 13-digit "word". A bare digit run has no
+    # other structural signal to lean on, so this detector must reject
+    # it below a reasonably high confidence bar — matching every other
+    # numeric PII pattern in this file (phone/email require > 35).
+    bbox_args = (1346, 2059, 2310, 2151)
+    low_conf_words = [_make_word("8141999147907", *bbox_args, conf=25, line_key=0)]
+    low_conf_lines = [_make_line(0, "8141999147907", *bbox_args, [0])]
+    rejected, _ = detectors.detect_card_number(low_conf_words, low_conf_lines, 0, 3000, 3500, detectors.InstanceCounter())
+    assert rejected == []
+
+    high_conf_words = [_make_word("8141999147907", *bbox_args, conf=90, line_key=0)]
+    high_conf_lines = [_make_line(0, "8141999147907", *bbox_args, [0])]
+    accepted, _ = detectors.detect_card_number(high_conf_words, high_conf_lines, 0, 3000, 3500, detectors.InstanceCounter())
+    assert len(accepted) == 1
 
 
 def test_generic_label_rejects_low_confidence_garbage_prefix():
