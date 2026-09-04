@@ -2,12 +2,10 @@
 FROM python:3.11-slim
 
 # tesseract-ocr     : OCR engine used by pytesseract
-# tesseract-ocr-urd : Urdu script recognition (GCC/expat-labor documents)
 # tesseract-ocr-ara : Arabic script recognition (GCC official documents)
 # poppler-utils     : used by pdf2image to convert PDF pages to images
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
-    tesseract-ocr-urd \
     tesseract-ocr-ara \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*

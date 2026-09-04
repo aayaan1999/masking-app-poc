@@ -4,21 +4,19 @@ Converts a PDF into page images and runs Tesseract OCR, normalizing the
 raw parallel-array output into easy-to-work-with `Word` / `Line` objects
 that every detector in this package builds on.
 
-Runs multilingual: English + Urdu + Arabic by default, so GCC identity
-documents (which are commonly bilingual, and whose expat-labor
-paperwork often carries Urdu alongside English/Arabic) are actually
-legible to OCR instead of coming back blank/garbled for the non-Latin
-script. Requires the corresponding Tesseract language packs — see
-Dockerfile (`tesseract-ocr-urd`, `tesseract-ocr-ara`). If they aren't
-installed, this falls back to English-only automatically rather than
-failing the whole request.
+Runs multilingual: English + Arabic by default, so GCC identity
+documents (which are commonly bilingual) are actually legible to OCR
+instead of coming back blank/garbled for the non-Latin script.
+Requires the corresponding Tesseract language pack — see Dockerfile
+(`tesseract-ocr-ara`). If it isn't installed, this falls back to
+English-only automatically rather than failing the whole request.
 """
 
 import pytesseract
 from pdf2image import convert_from_path
 
 DPI = 300
-PREFERRED_LANGS = ["eng", "urd", "ara"]
+PREFERRED_LANGS = ["eng", "ara"]
 
 _active_lang_string = None
 

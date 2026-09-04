@@ -293,7 +293,12 @@ function renderPreviewBoxes() {
 let dragState = null;
 
 previewCanvas.addEventListener('mousedown', (evt) => {
-  if (evt.target !== previewImage && evt.target !== previewCanvas) return; // ignore clicks starting on an existing box
+  // The boxes overlay (#preview-boxes) sits on top of the image at
+  // inset:0 so every click's real target is that layer, not the <img>
+  // or the canvas <div> themselves — only bail when the click actually
+  // landed on an existing box (or one of its children), otherwise a
+  // drag never starts anywhere except the exact image/canvas element.
+  if (evt.target.closest('.preview-box')) return;
   const rect = previewCanvas.getBoundingClientRect();
   dragState = {
     startX: evt.clientX - rect.left,

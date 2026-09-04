@@ -17,9 +17,9 @@ python -m spacy download en_core_web_sm   # optional, enables NER-based detectio
 python app.py                              # dev server on :8080 (PORT env var to override)
 ```
 
-Requires **Tesseract OCR** (with `urd` and `ara` language packs — see `Dockerfile`) and **poppler**
+Requires **Tesseract OCR** (with the `ara` language pack — see `Dockerfile`) and **poppler**
 (`pdf2image` shells out to `pdftoppm`) installed on the host/PATH. Without the extra Tesseract language
-packs, OCR silently falls back to English-only (`engine/ocr.py: active_ocr_langs`).
+pack, OCR silently falls back to English-only (`engine/ocr.py: active_ocr_langs`).
 
 Production runs via gunicorn: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 180`.
 
@@ -69,7 +69,7 @@ of word indices, threaded through to avoid double-detecting the same text under 
 2. `gcc_ids.run_gcc_detectors` — GCC passport/national-ID numbers (UAE Emirates ID, Saudi, Qatar, Kuwait,
    Bahrain, Oman). Emirates ID matches on pattern alone (`784-...` is distinctive); every other GCC ID
    pattern is just N digits, so it only counts as a match when a recognized passport/national-ID label
-   (English/Urdu/Arabic, via `i18n_labels`) appears on the same OCR'd line.
+   (English/Arabic, via `i18n_labels`) appears on the same OCR'd line.
 3. `tables.detect_table_columns` — finds header rows on bank-statement-style tabular pages (Date /
    Narration / Debit / Credit / Balance) and emits one instance per (row, column) cell, so the UI can
    offer "mask this whole column."
@@ -89,10 +89,10 @@ terms/names/`label:value` patterns the fixed detectors don't cover — see `engi
 
 ## Multilingual / GCC-specific handling
 
-This app is built around bilingual GCC identity documents (English + Urdu + Arabic), not just plain
+This app is built around bilingual GCC identity documents (English + Arabic), not just plain
 English forms:
 
-- `engine/ocr.py` runs Tesseract with `eng+urd+ara` when those language packs are installed, and
+- `engine/ocr.py` runs Tesseract with `eng+ara` when the Arabic language pack is installed, and
   normalizes Arabic-Indic/Persian digit forms to ASCII (every numeric regex in the app only matches
   ASCII `0-9`).
 - `engine/i18n_labels.py` is the single source of truth mapping a *concept* (e.g. "date of birth") to its

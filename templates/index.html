@@ -34,7 +34,37 @@
       <div class="dropzone__filename" id="file-name"></div>
     </div>
 
+    <div class="trust-row">
+      <span class="trust-item"><span class="trust-item__icon trust-item__icon--ok">✓</span> Processed in your browser</span>
+      <span class="trust-item"><span class="trust-item__icon trust-item__icon--grid">⊞</span> Redactions are permanent</span>
+      <span class="trust-item"><span class="trust-item__icon trust-item__icon--no">✗</span> Nothing retained after session</span>
+    </div>
+
     <div id="upload-status" class="status"></div>
+
+    <div class="steps">
+      <span class="eyebrow eyebrow--center">THREE STEPS</span>
+      <h2 class="headline headline--sm headline--center">From upload to redacted download</h2>
+      <p class="subhead subhead--center">No accounts, no configuration — the entire flow happens in a single session.</p>
+
+      <div class="steps__grid">
+        <div class="step-card">
+          <span class="step-card__num">01</span>
+          <h3 class="step-card__title">Upload</h3>
+          <p class="step-card__desc">Add a PDF from your device. Files are read locally and never leave your browser.</p>
+        </div>
+        <div class="step-card">
+          <span class="step-card__num">02</span>
+          <h3 class="step-card__title">Mark fields</h3>
+          <p class="step-card__desc">Draw boxes directly over names, numbers, or any text that needs to be hidden.</p>
+        </div>
+        <div class="step-card">
+          <span class="step-card__num">03</span>
+          <h3 class="step-card__title">Download</h3>
+          <p class="step-card__desc">Get a redacted copy instantly. The original and marked regions are not stored.</p>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- STEP 2: single combined panel (hidden until /extract returns) — the
