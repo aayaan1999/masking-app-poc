@@ -43,6 +43,12 @@ body {
 .headline--sm { font-size: 1.4rem; margin-bottom: 6px; }
 .subhead { color: var(--text-lo); line-height: 1.6; margin: 0 0 4px; }
 
+/* The hero panel (eyebrow badge, headline, subhead) is centered as a
+   block — needed so the eyebrow badge (an inline-block pill) actually
+   centers, since that only follows its parent's text-align. */
+#step-upload { text-align: center; }
+#step-upload .subhead { max-width: 560px; margin-left: auto; margin-right: auto; }
+
 .dropzone {
   border: 1px solid var(--panel-border); border-radius: 18px; padding: 44px; text-align: center;
   cursor: pointer; margin-top: 22px; background: var(--panel-bg-raised);
