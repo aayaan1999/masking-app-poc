@@ -68,6 +68,29 @@
     <div id="mask-status" class="status"></div>
   </section>
 
+  <!-- STEP 2b: visual preview with detection boxes, drawable regions -->
+  <section id="step-preview" class="panel step" hidden>
+    <h2 class="headline headline--sm">Preview</h2>
+    <p class="subhead">
+      Click a box to toggle it for redaction. Drag anywhere else on the page to draw a
+      custom box of your own.
+    </p>
+
+    <div class="preview-toolbar">
+      <div class="preview-pager">
+        <button type="button" id="preview-prev" class="btn-secondary">← Prev page</button>
+        <span id="preview-page-label" class="preview-pager__label">Page 1</span>
+        <button type="button" id="preview-next" class="btn-secondary">Next page →</button>
+      </div>
+      <button type="button" id="preview-clear-manual" class="btn-secondary">Clear custom boxes</button>
+    </div>
+
+    <div id="preview-canvas" class="preview-canvas">
+      <img id="preview-image" class="preview-canvas__image" draggable="false">
+      <div id="preview-boxes" class="preview-canvas__boxes"></div>
+    </div>
+  </section>
+
 </main>
 
 <footer class="footer">Processed in memory · originals deleted immediately after OCR · session data expires after 30 minutes</footer>

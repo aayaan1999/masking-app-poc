@@ -3,7 +3,7 @@ import uuid
 import threading
 import traceback
 
-from flask import Flask, request, render_template, send_file, jsonify, after_this_request
+from flask import Flask, request, render_template, send_file, jsonify, after_this_request, abort
 
 from engine import pipeline, jobs, ner, ocr
 
@@ -63,7 +63,12 @@ def _run_extraction_job(job_id, input_path):
         groups = pipeline.group_for_ui(instances)
         result = {
             "num_pages": len(page_images),
+            "page_sizes": [{"w": img.size[0], "h": img.size[1]} for img in page_images],
             "groups": groups,
+            # Sent alongside the grouped checkboxes so the preview tab can
+            # draw a box per instance and let the user toggle/redact each
+            # one individually, not just whole groups at a time.
+            "instances": instances,
             "ner_active": (USE_NER and ner.ner_available()),
             "ocr_languages": ocr.active_ocr_langs(),
         }
@@ -112,11 +117,26 @@ def extract_status(job_id):
     return jsonify({"job_id": job_id, **status})
 
 
+@app.route("/jobs/<job_id>/page/<int:page_idx>")
+def job_page_image(job_id, page_idx):
+    """Serves a previously extracted page as a PNG, for the preview tab to
+    render detection boxes on top of. job_id is always a uuid4 hex minted
+    by /extract, so it's safe to use directly as a path component."""
+    if not all(c in "0123456789abcdef" for c in job_id):
+        abort(404)
+    path = os.path.join(jobs.job_dir(BASE_DIR, job_id), f"page_{page_idx}.png")
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, mimetype="image/png")
+
+
 @app.route("/mask", methods=["POST"])
 def mask():
     body = request.get_json(silent=True) or {}
     job_id = body.get("job_id")
     selected_group_ids = set(body.get("group_ids", []))
+    selected_instance_ids = set(body.get("instance_ids", []))
+    manual_boxes = body.get("manual_boxes", []) or []
     instructions = (body.get("instructions") or "").strip()
 
     if not job_id:
@@ -129,12 +149,36 @@ def mask():
     all_instances = job_data["instances"]
     num_pages = job_data["num_pages"]
 
-    # Re-derive each instance's group_id the same way group_for_ui does,
-    # so a selected checkbox maps back to every matching instance.
+    # An instance is selected either because its individual box was
+    # picked in the preview tab, or because the whole group it belongs to
+    # was checked in the field list — the two selection UIs write to
+    # different fields on the request but both resolve to the same set
+    # of underlying instances.
     selected_instances = [
         inst for inst in all_instances
-        if f"{inst['category']}::{inst['field_type']}::{inst['display_label']}" in selected_group_ids
+        if inst["id"] in selected_instance_ids
+        or f"{inst['category']}::{inst['field_type']}::{inst['display_label']}" in selected_group_ids
     ]
+
+    # Hand-drawn boxes from the preview tab arrive as raw page+bbox pairs
+    # with no detector behind them, so they're wrapped into the same
+    # instance shape apply_redactions expects rather than going through
+    # detection at all.
+    for idx, box in enumerate(manual_boxes):
+        try:
+            page = int(box["page"])
+            bbox = [float(v) for v in box["bbox"]]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if len(bbox) != 4 or not (0 <= page < num_pages):
+            continue
+        left, top, right, bottom = bbox
+        if right <= left or bottom <= top:
+            continue
+        selected_instances.append({
+            "id": f"manual-{idx}", "field_type": "manual", "display_label": "Custom area",
+            "category": "custom", "value": "", "page": page, "bbox": (left, top, right, bottom),
+        })
 
     if instructions:
         ocr_cache = jobs.load_ocr_data(BASE_DIR, job_id)

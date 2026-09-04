@@ -38,3 +38,48 @@ textarea { width: 100%; min-height: 110px; border-radius: 14px; border: 1px soli
 .btn-primary { background: #4285f4; color: #fff; }
 .btn-secondary { background: rgba(66,133,244,0.1); color: #0056cc; }
 .footer { text-align: center; color: rgba(0,0,0,0.5); padding: 20px; font-size: 0.9rem; }
+
+/* Preview tab */
+#step-preview { margin-top: 24px; }
+.preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
+.preview-pager { display: flex; align-items: center; gap: 10px; }
+.preview-pager__label { font-weight: 600; color: #000; min-width: 70px; text-align: center; }
+.preview-canvas {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  border: 1px solid rgba(66,133,244,0.25);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  cursor: crosshair;
+  user-select: none;
+}
+.preview-canvas__image { display: block; max-width: 100%; height: auto; pointer-events: none; }
+.preview-canvas__boxes { position: absolute; inset: 0; }
+.preview-box {
+  position: absolute;
+  border: 2px solid #4285f4;
+  background: rgba(66,133,244,0.12);
+  box-sizing: border-box;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+.preview-box:hover { background: rgba(66,133,244,0.25); }
+.preview-box--selected { border-color: #d32f2f; background: rgba(211,47,47,0.35); }
+.preview-box--selected:hover { background: rgba(211,47,47,0.45); }
+.preview-box--manual { border-style: dashed; border-color: #d32f2f; background: rgba(211,47,47,0.35); }
+.preview-box__label {
+  position: absolute; top: -20px; left: -2px; white-space: nowrap;
+  font-size: 0.7rem; background: #1a1a1a; color: #fff; padding: 2px 6px; border-radius: 6px;
+  pointer-events: none; opacity: 0; transition: opacity 0.1s;
+}
+.preview-box:hover .preview-box__label { opacity: 1; }
+.preview-box__delete {
+  position: absolute; top: -10px; right: -10px; width: 20px; height: 20px; border-radius: 50%;
+  background: #d32f2f; color: #fff; font-size: 0.75rem; line-height: 20px; text-align: center;
+  cursor: pointer;
+}
+.preview-drag-rect {
+  position: absolute; border: 2px dashed #d32f2f; background: rgba(211,47,47,0.2); pointer-events: none;
+}
