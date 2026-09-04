@@ -121,7 +121,7 @@ textarea::placeholder { color: var(--text-lo); }
 .btn-secondary:hover { background: rgba(255,255,255,0.1); }
 .btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.footer { text-align: center; color: rgba(0,0,0,0.5); padding: 20px; font-size: 0.9rem; }
+.footer { text-align: center; color: rgba(255,255,255,0.75); padding: 20px; font-size: 0.9rem; text-shadow: 0 1px 3px rgba(0,0,0,0.35); }
 
 /* Preview tab */
 .preview-layout { display: flex; gap: 22px; margin-top: 22px; align-items: flex-start; flex-wrap: wrap; }
