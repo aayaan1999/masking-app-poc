@@ -55,6 +55,25 @@ def test_generic_label_on_next_line_is_detected():
     assert instances[0]["value"] == "John Smith"
 
 
+def test_generic_label_rejects_low_confidence_garbage_prefix():
+    # Simulates OCR noise picked up from a noisy/photo-textured region of
+    # the scan: a low-confidence garbage token ("Ss") sits right before a
+    # real recognized keyword ("Occupation"). The line's *average*
+    # confidence is still decent (helped by the high-confidence real
+    # word), so this must be caught by checking each label word's own
+    # confidence, not just the line average.
+    words = [
+        _make_word("Ss", 10, 0, 30, 20, conf=12, line_key=0),
+        _make_word("Occupation", 34, 0, 120, 20, conf=92, line_key=0),
+        _make_word("Engineer", 124, 0, 200, 20, conf=88, line_key=0),
+    ]
+    lines = [_make_line(0, "Ss Occupation Engineer", 10, 0, 200, 20, [0, 1, 2])]
+
+    instances = detectors.detect_generic_labels(words, lines, 0, 300, 200, detectors.InstanceCounter(), set())
+
+    assert instances == []
+
+
 def test_gemini_detector_parses_json_and_converts_bbox(monkeypatch):
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
     monkeypatch.setattr(gemini_detector, "_call_gemini", lambda image, prompt: '[{"field_type": "email", "value": "john@example.com", "bbox": [10, 20, 80, 15], "label": "Email Address"}]')

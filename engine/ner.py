@@ -114,6 +114,15 @@ def detect_entities(words, lines, page, img_w, img_h, counter, already_claimed):
                 # Skipping the entity is safer than mis-boxing it that
                 # wide; the regex/label detectors still cover most PII.
                 continue
+            # The line-average confidence check above can still pass a
+            # line where the words spaCy actually pulled this specific
+            # entity span from are individually low-confidence garbage
+            # (a few clean words elsewhere on the same noisy line pull
+            # the average up) — check the span's own words too before
+            # trusting it enough to draw a box.
+            span_confs = [words[i]["conf"] for i in idxs if words[i]["conf"] is not None]
+            if span_confs and min(span_confs) < 40:
+                continue
             bbox = words_bbox(words, idxs, img_w, img_h)
             instances.append({
                 "id": counter.next(), "field_type": field_type,

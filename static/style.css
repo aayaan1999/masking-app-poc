@@ -17,10 +17,11 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: linear-gradient(135deg, #e8f4ff 0%, #d0e8ff 100%);
+  background:
+    radial-gradient(ellipse 1400px 900px at 50% 8%, #cfe0f6 0%, #a8bcdb 35%, #6d7fa0 65%, #445069 100%);
 }
 
-.layout { max-width: 1100px; margin: 0 auto; padding: 28px 24px; display: flex; flex-direction: column; gap: 24px; }
+.layout { max-width: 960px; margin: 0 auto; padding: 28px 24px; display: flex; flex-direction: column; gap: 24px; }
 
 .panel {
   background: var(--panel-bg);
@@ -45,6 +46,11 @@ body {
 .dropzone {
   border: 1px solid var(--panel-border); border-radius: 18px; padding: 44px; text-align: center;
   cursor: pointer; margin-top: 22px; background: var(--panel-bg-raised);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.dropzone:hover {
+  border-color: var(--cyan-border);
+  box-shadow: 0 0 0 1px var(--cyan-border), 0 0 32px 4px var(--cyan-soft);
 }
 .dropzone__icon {
   width: 44px; height: 44px; line-height: 44px; margin: 0 auto 14px; border-radius: 50%;

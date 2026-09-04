@@ -295,6 +295,46 @@ def _trim_value_at_next_label(words, idxs):
     return idxs
 
 
+def _label_words_confident(words, idxs, min_conf=40):
+    """
+    True only if every word making up a candidate label individually
+    OCR'd with reasonable confidence. `_label_is_probable` accepts a
+    label as soon as any one of its words matches a known keyword
+    ("Occupation", "Nationality", ...) — on a noisy scan region (a
+    photo, logo, watermark, or QR code, where Tesseract still emits
+    word-shaped garbage at low per-word confidence) that let a real
+    keyword towed along one or more garbage tokens ahead of it, e.g.
+    "Ss Occupation" or "??? Emirates I.d", get accepted as a genuine
+    field label. The line-average confidence gate in
+    detect_generic_labels doesn't catch this because one high-confidence
+    real keyword pulls the *average* back up even when the other word(s)
+    in that same candidate label are individually unreadable. Checking
+    each label word's own confidence catches it directly.
+
+    Confidence alone still isn't enough for a short garbage token like
+    "3" or "S$" — a single stray digit or symbol-heavy fragment can
+    score a deceptively decent confidence from Tesseract despite not
+    being a real word, so this also requires each label word to at
+    least *look* like one: either a recognized keyword, or a purely
+    alphabetic run of 3+ letters.
+    """
+    # "S/o", "W/o", "D/o", "C/o" ("son of" / "wife of" / etc.) are short,
+    # real, common label particles that would otherwise fail the 3-letter
+    # shape check below.
+    _short_ok = {"so", "wo", "do", "co"}
+    for i in idxs:
+        c = words[i]["conf"]
+        if c is None or c < min_conf:
+            return False
+        token = re.sub(r"[^A-Za-z0-9]", "", words[i]["text"]).lower()
+        if not token:
+            return False
+        if (token not in _KNOWN_LABEL_TOKENS and token not in _short_ok
+                and not (token.isalpha() and len(token) >= 3)):
+            return False
+    return True
+
+
 def _extract_label_value_pair(words, line, next_line=None):
     line_text = _normalize_label_text(line["text"])
     if not line_text:
@@ -303,8 +343,10 @@ def _extract_label_value_pair(words, line, next_line=None):
     m = _LABEL_LINE.match(line_text)
     if m:
         label, value = m.group(1).strip(), m.group(2).strip()
-        if _label_is_probable(label) and _looks_like_value(value):
-            idxs = line["word_idxs"]
+        idxs = line["word_idxs"]
+        label_idxs = idxs[:len(label.split())]
+        if (_label_is_probable(label) and _looks_like_value(value)
+                and _label_words_confident(words, label_idxs)):
             colon_pos = next((i for i, wi in enumerate(idxs) if ":" in words[wi]["text"]), None)
             value_idxs = list(idxs[colon_pos + 1:]) if colon_pos is not None else list(idxs[len(label.split()):])
             value_idxs = _trim_value_at_next_label(words, value_idxs)
@@ -348,7 +390,9 @@ def _extract_label_value_pair(words, line, next_line=None):
         if not value_idxs:
             continue
         value_text = " ".join(words[i]["text"] for i in value_idxs)
-        if _label_is_probable(label) and _looks_like_value(value_text):
+        label_idxs = line["word_idxs"][:label_len]
+        if (_label_is_probable(label) and _looks_like_value(value_text)
+                and _label_words_confident(words, label_idxs)):
             return label, value_text, value_idxs
 
     if next_line is not None and _label_is_probable(line_text):
