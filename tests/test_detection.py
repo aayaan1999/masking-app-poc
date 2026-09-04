@@ -55,6 +55,33 @@ def test_generic_label_on_next_line_is_detected():
     assert instances[0]["value"] == "John Smith"
 
 
+def test_name_detector_does_not_pull_in_same_row_sibling_column():
+    # Two "lines" at nearly the same y-position (as produced by
+    # ocr._cluster_into_lines splitting a bilingual row into an English
+    # column and a far-off Arabic column) are adjacent in the
+    # (top, left)-sorted `lines` list. detect_name's "value wraps onto
+    # the next line" fallback must not treat that same-row sibling as a
+    # continuation of this line's value — only an actual row below.
+    words = [
+        _make_word("Name", 10, 712, 90, 742),
+        _make_word("John", 100, 712, 150, 742),
+        _make_word("Smith", 160, 712, 220, 742),
+        # A same-row sibling column, far to the right (simulates the
+        # Arabic mirror column on a real bilingual document).
+        _make_word("Unrelated", 1500, 712, 1600, 742),
+        _make_word("Column", 1610, 715, 1700, 745),
+    ]
+    lines = [
+        _make_line(0, "Name John Smith", 10, 712, 220, 742, [0, 1, 2]),
+        _make_line(1, "Unrelated Column", 1500, 712, 1700, 745, [3, 4]),
+    ]
+
+    instances, _ = detectors.detect_name(words, lines, 0, 2000, 1000, detectors.InstanceCounter())
+
+    assert len(instances) == 1
+    assert instances[0]["value"] == "John Smith"
+
+
 def test_generic_label_rejects_low_confidence_garbage_prefix():
     # Simulates OCR noise picked up from a noisy/photo-textured region of
     # the scan: a low-confidence garbage token ("Ss") sits right before a

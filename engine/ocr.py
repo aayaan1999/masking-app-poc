@@ -60,6 +60,18 @@ def pdf_to_images(pdf_path: str, dpi: int = DPI):
     return convert_from_path(pdf_path, dpi=dpi)
 
 
+# How wide a horizontal gap between two adjacent words has to be before
+# they're treated as separate columns rather than one continuous line
+# (see _cluster_into_lines below). Sits comfortably above how much a
+# printed row can normally space out a field's own label from its value
+# (well under 300px on a real Dubai trade license) and below the
+# smallest real column gutter observed on the same kind of document
+# (400px+, often 1000px+) — so it splits genuinely separate columns
+# without slicing up an ordinary label:value pair. At DPI=300 (ocr.DPI)
+# this is roughly 1.1 inches.
+_COLUMN_GAP_PX = 340
+
+
 def _cluster_into_lines(words):
     """
     Groups word indices into visual rows by y-position, rather than
@@ -70,6 +82,17 @@ def _cluster_into_lines(words):
     every row-aware feature (table headers, same-line name/value
     pairs, and RTL label/value pairing). Clustering by vertical center
     is layout-mode- and reading-direction-independent.
+
+    A row-level cluster is then split again on any unusually wide
+    horizontal gap between consecutive words. This matters on bilingual
+    documents that mirror each field in two side-by-side columns (an
+    English label/value column and an Arabic one) — both columns sit at
+    the same y-position, so without this split they were merged into one
+    "line" spanning the entire page width. Every downstream feature that
+    reads "the rest of this line" (the generic label:value fallback,
+    multi-word name/address aggregation, NER) then produced a bbox
+    covering both columns and everything printed between them, instead
+    of just the one field it actually found.
     """
     if not words:
         return []
@@ -84,7 +107,20 @@ def _cluster_into_lines(words):
             clusters.append(current)
             current = [i]
     clusters.append(current)
-    return clusters
+
+    split_clusters = []
+    for cluster in clusters:
+        by_left = sorted(cluster, key=lambda i: words[i]["left"])
+        group = [by_left[0]]
+        for i in by_left[1:]:
+            gap = words[i]["left"] - words[group[-1]]["right"]
+            if gap > _COLUMN_GAP_PX:
+                split_clusters.append(group)
+                group = [i]
+            else:
+                group.append(i)
+        split_clusters.append(group)
+    return split_clusters
 
 
 def ocr_page(image):

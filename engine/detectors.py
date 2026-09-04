@@ -54,6 +54,25 @@ _KNOWN_LABEL_TOKENS = {
     "holder",}
 
 
+def _is_row_below(line, other, max_gap_factor=1.5, overlap_tolerance=10):
+    """
+    True only if `other` is a plausible next PRINTED ROW below `line` —
+    i.e. it's safe to treat as a wrapped continuation of this line's
+    value. `lines` is sorted by (top, left), so `lines[li + 1]` isn't
+    always the row below: ocr._cluster_into_lines now splits one wide
+    visual row into several same-row entries wherever a bilingual
+    document's English and Arabic columns (or a table's cells) sit far
+    apart horizontally, and two of those same-row siblings can be
+    adjacent in that sorted list. Without this check, a detector's
+    "value continues on the next line" fallback could pull in the
+    neighboring column at the *same* y-position instead of an actual
+    next row, producing a value/bbox that spans both columns.
+    """
+    gap = other["top"] - line["bottom"]
+    avg_h = max(1, line["bottom"] - line["top"])
+    return -overlap_tolerance <= gap < avg_h * max_gap_factor
+
+
 def _mk(field_type, display_label, category, value, page, bbox, iid):
     return {
         "id": iid, "field_type": field_type, "display_label": display_label,
@@ -421,15 +440,23 @@ def detect_labelled_dates(words, lines, page, img_w, img_h, counter):
         date_idxs = line_date_idxs(line)
 
         if concepts_here and not date_idxs:
-            # look up to two nearby lines for a matching date value
+            # look up to two nearby lines for a matching date value —
+            # only ones actually below this line, not a same-row sibling
+            # column (see _is_row_below).
             for neighbor in lines[li + 1:li + 3]:
+                if not _is_row_below(line, neighbor):
+                    continue
                 date_idxs = line_date_idxs(neighbor)
                 if date_idxs:
                     break
 
         if not concepts_here and date_idxs:
-            # if a date appears without a concept, search nearby lines for one
+            # if a date appears without a concept, search nearby lines
+            # above this one for one — again, actually above, not a
+            # same-row sibling column.
             for neighbor in lines[max(0, li - 2):li]:
+                if not _is_row_below(neighbor, line):
+                    continue
                 neighbor_concepts = [c for c in ("dob", "date_of_issue", "date_of_expiry")
                                      if i18n_labels.line_matches_concept(neighbor["text"], c)]
                 if neighbor_concepts:
@@ -689,9 +716,7 @@ def detect_address(words, lines, page, img_w, img_h, counter):
 
         if li + 1 < len(lines):
             nxt = lines[li + 1]
-            gap = nxt["top"] - line["bottom"]
-            avg_h = max(1, line["bottom"] - line["top"])
-            if gap < avg_h * 1.5 and not _LABEL_LINE.match(nxt["text"]):
+            if _is_row_below(line, nxt) and not _LABEL_LINE.match(nxt["text"]):
                 idxs = idxs + _trim_value_at_next_label(words, list(nxt["word_idxs"]))
                 claimed_lines.add(li + 1)
 
@@ -730,7 +755,8 @@ def detect_name(words, lines, page, img_w, img_h, counter):
         if li in claimed_lines:
             continue
         if not i18n_labels.contains_any_keyword(line["text"], NAME_KEYWORDS):
-            pair = _extract_label_value_pair(words, line, lines[li + 1] if li + 1 < len(lines) else None)
+            nxt_line = lines[li + 1] if (li + 1 < len(lines) and _is_row_below(line, lines[li + 1])) else None
+            pair = _extract_label_value_pair(words, line, nxt_line)
             if not pair:
                 continue
             label, value, value_idxs = pair
@@ -773,9 +799,7 @@ def detect_name(words, lines, page, img_w, img_h, counter):
                 # truncated to just the first token(s), leaving the rest
                 # of the name outside the mask box.
                 nxt = lines[li + 1]
-                gap = nxt["top"] - line["bottom"]
-                avg_h = max(1, line["bottom"] - line["top"])
-                if gap < avg_h * 1.5 and not _LABEL_LINE.match(nxt["text"]) and not i18n_labels.contains_any_keyword(nxt["text"], NAME_KEYWORDS):
+                if _is_row_below(line, nxt) and not _LABEL_LINE.match(nxt["text"]) and not i18n_labels.contains_any_keyword(nxt["text"], NAME_KEYWORDS):
                     value_idxs = value_idxs + list(nxt["word_idxs"])
                     claimed_lines.add(li + 1)
 
@@ -854,7 +878,8 @@ def detect_generic_labels(words, lines, page, img_w, img_h, counter, already_cla
             # claimed right there, not wrapped onto the next row, so
             # treating it as label-only and grabbing text off an entirely
             # unrelated following line produced a nonsense field.
-            next_line = lines[li + 1] if (li + 1 < len(lines) and run_idxs[-1] == line["word_idxs"][-1]) else None
+            next_line = (lines[li + 1] if (li + 1 < len(lines) and run_idxs[-1] == line["word_idxs"][-1]
+                                            and _is_row_below(line, lines[li + 1])) else None)
             for _ in range(6):
                 pair = _extract_label_value_pair(words, current_line, next_line)
                 if not pair:
